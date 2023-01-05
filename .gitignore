@@ -1,0 +1,3 @@
+/target
+/web_example/*.wasm
+.DS_Store

@@ -1,0 +1,21 @@
+[package]
+name = "warpcore_mvp"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+#wasm_guardian = {git = "https://github.com/kettle11/wasm_guardian"}
+wasm_guardian = {path = "../wasm_guardian"}
+
+[profile.release]
+# Consider these options for a smaller binary size
+# strip = true
+# panic = "abort"
+# opt-level = "z"  # Optimize for size.
+# lto = true
+# codegen-units = 1

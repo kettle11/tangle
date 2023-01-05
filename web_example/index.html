@@ -1,0 +1,45 @@
+<html>
+
+<body>
+    <h1>Warp Core MVP</h1>
+    <script src="room.js"></script>
+    <script src="manager.js"></script>
+    <script>
+        let start_time = Date.now();
+
+        async function run() {
+            let wasm_binary = await fetch("warpcore_mvp.wasm").then(response => response.arrayBuffer());
+            let imports = {
+                env: {
+                    external_log: function (pointer, length) {
+                        console.log("EXTERNAL LOG CALLED");
+                        /*
+                        const message_data = new Uint8Array(memory.buffer, pointer, length);
+                        const decoded_string = decoder.decode(new Uint8Array(message_data));
+                        console.log(decoded_string);
+                        */
+                    },
+                    external_error: function (pointer, length) {
+                        console.log("EXTERNAL ERROR CALLED");
+
+                        // const message_data = new Uint8Array(memory.buffer, pointer, length);
+                        // const decoded_string = decoder.decode(new Uint8Array(message_data));
+                        // console.error(decoded_string);
+                    }
+                }
+            };
+
+            let warpcore = await getWarpCore(wasm_binary, imports);
+
+            document.onkeydown = async (event) => {
+                if (event.code == "KeyI") {
+                    console.log("TEST MESSAGE RESULT: ", await warpcore.call_wasm("test_message", [], Date.now()));
+                }
+            };
+        };
+        run();
+    </script>
+
+</body>
+
+</html>
