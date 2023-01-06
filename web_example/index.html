@@ -1,6 +1,8 @@
 <html>
 
 <body>
+    <canvas id="myCanvas" width="600" height="600"></canvas>
+
     <h1>Warp Core MVP</h1>
     <script src="room.js"></script>
     <script src="manager.js"></script>
@@ -8,7 +10,12 @@
         let start_time = Date.now();
 
         async function run() {
-            let wasm_binary = await fetch("warpcore_mvp.wasm").then(response => response.arrayBuffer());
+            var canvas = document.getElementById("myCanvas");
+            var ctx = canvas.getContext("2d");
+            ctx.fillStyle = "blue";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            let wasm_binary = await fetch("example_script.wasm").then(response => response.arrayBuffer());
             let imports = {
                 env: {
                     external_log: function (pointer, length) {
@@ -25,17 +32,64 @@
                         // const message_data = new Uint8Array(memory.buffer, pointer, length);
                         // const decoded_string = decoder.decode(new Uint8Array(message_data));
                         // console.error(decoded_string);
+                    },
+                    draw_rect: function (r, g, b, a, x, y, w, h) {
+                        console.log("DRAW RECT CALLED");
+                        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
+                        ctx.fillStyle =
+                            ctx.fillRect(x, y, w, h);
                     }
                 }
             };
 
-            let warpcore = await getWarpCore(wasm_binary, imports);
+            let current_animation_time = Date.now();
+            let warpcore = await getWarpCore(wasm_binary, imports,
+                // On Load
+                async (time) => {
+                    current_animation_time = time;
+                    await warpcore.call_wasm("draw", [], Date.now());
+                },
+                // On update
+                async () => {
+                    await warpcore.call_wasm("draw", [], Date.now());
+                });
+
+            await warpcore.call_wasm("draw", [], Date.now());
+
+
+            let last_time = Date.now();
+            let time_accumulator = 0;
+
+            let time_step = 1.0 / 60.0;
+
+            async function animation() {
+                let time_now = Date.now();
+                let time_elapsed = time_now - last_time;
+
+                time_accumulator += time_elapsed;
+                while (time_accumulator > time_step) {
+                    time_accumulator -= time_step;
+                    current_animation_time += time_step;
+                    await warpcore.call_wasm_unnetworked("draw", [], current_animation_time);
+                }
+
+                last_time = time_now;
+
+                window.requestAnimationFrame(animation);
+            }
 
             document.onkeydown = async (event) => {
                 if (event.code == "KeyI") {
-                    console.log("TEST MESSAGE RESULT: ", await warpcore.call_wasm("test_message", [], Date.now()));
+                    await warpcore.call_wasm("step", [], Date.now());
+                    await warpcore.call_wasm("draw", [], Date.now());
+                }
+
+                if (event.code == "KeyA") {
+                    animation();
                 }
             };
+
+
         };
         run();
     </script>

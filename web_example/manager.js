@@ -1,6 +1,6 @@
 const WASM_PAGE_SIZE = 65536;
 
-async function getWarpCore(wasm_binary, imports_in) {
+async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_heap_load) => { }, on_update = () => { }) {
 
     let current_time = 0;
 
@@ -80,7 +80,7 @@ async function getWarpCore(wasm_binary, imports_in) {
     let new_heap = null;
     let new_heap_offset = 0;
     let loaded_heap = true;
-
+    let time_of_heap_load = 0;
     const HEAP_CHUNK_SIZE = 16000; // 16kb
 
     // TODO: Track peers
@@ -131,6 +131,8 @@ async function getWarpCore(wasm_binary, imports_in) {
                 new Uint8Array(wasm_memory.buffer).set(new_heap);
                 new_heap = null;
                 loaded_heap = true;
+
+                on_load(time_of_heap_load);
             }
         } else {
             let m = JSON.parse(message);
@@ -144,13 +146,15 @@ async function getWarpCore(wasm_binary, imports_in) {
                 console.log("HEAP BYTES REMAINING: ", heap_bytes_remaining);
 
                 new_heap = new Uint8Array(m.heap_size);
+                time_of_heap_load = m.time;
             } else if (m.message_type == 2) {
                 // TODO: This could be an unloaded peer.
                 // That should be avoided somehow.
                 if (loaded_heap) {
                     room_object.message_specific_peer(peer_id, JSON.stringify({
                         message_type: 1,
-                        heap_size: wasm_memory.buffer.byteLength
+                        heap_size: wasm_memory.buffer.byteLength,
+                        time: current_time
                     }));
 
                     console.log("HEAP SIZE: ", wasm_memory.buffer.byteLength);
@@ -167,8 +171,27 @@ async function getWarpCore(wasm_binary, imports_in) {
     async function call_wasm_unnetworked(function_name, args, time) {
         let i = function_calls.length;
         for (; i > 0; i--) {
-            if (function_calls[i - 1].time < time) {
+            let call = function_calls[i - 1];
+            if (call.time < time) {
                 break;
+            }
+
+            // If this function call is identical to the last function call then
+            // deduplicate it.
+            // I'm not sure this is a good idea, there may be something better.
+            if (call.time == time) {
+                function arrayEquals(a, b) {
+                    return Array.isArray(a) &&
+                        Array.isArray(b) &&
+                        a.length === b.length &&
+                        a.every((val, index) => val === b[index]);
+                }
+
+                if (function_name == call.function_name && arrayEquals(call.args, args)) {
+                    console.log("IDENTICAL FUNCTION CALL");
+                    return;
+                }
+
             }
         }
 
@@ -177,6 +200,8 @@ async function getWarpCore(wasm_binary, imports_in) {
 
         function_calls.splice(i, 0, { function_name: function_name, args: args, time: time });
         current_time = time;
+
+        let actions_count = actions.length;
         let result = wasm_instance.exports[function_name](...args);
 
         // Replay all function calls that occur after this event.
@@ -188,6 +213,12 @@ async function getWarpCore(wasm_binary, imports_in) {
         }
 
         current_time = time;
+
+        // Only issue on `up_update` event if this actually changed something.
+        if (actions_count != actions.length) {
+            on_update();
+        }
+
         return result;
     }
 

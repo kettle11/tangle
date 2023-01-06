@@ -1,3 +1,4 @@
 /target
+/example_script/target/
 /web_example/*.wasm
 .DS_Store
