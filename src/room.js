@@ -11,10 +11,10 @@ let current_state = StateEnum.DISCONNECTED;
 let room = {
     setup(on_connected, on_disconnected, on_peer_joined, on_peer_left, on_message) {
         if (!server_socket) {
-            server_socket = new WebSocket("ws://127.0.0.1:8081");
+            server_socket = new WebSocket("ws://0.0.0.0:8081");
         }
         function check_if_joined() {
-            if (peers_to_join.size == 0) {
+            if (current_state == StateEnum.JOINING && peers_to_join.size == 0) {
                 current_state = StateEnum.CONNECTED;
                 on_connected();
             }
@@ -65,14 +65,6 @@ let room = {
             // bug where some packets are dropped.
             // TODO: Report this bug.
             const channel = peer_connection.createDataChannel("sendChannel", { negotiated: true, id: 2, ordered: true });
-            channel.onopen = (event) => {
-                // console.log("CHANNEL OPENED");
-                // // Finally we can send data!
-            }
-            channel.onmessage = (event) => {
-                // Call the user provided callback
-                on_message(event.data, peer_id);
-            }
             peer_connection.data_channel = channel;
 
             peer_connection.onicecandidate = event => {
@@ -102,16 +94,27 @@ let room = {
             };
 
             peer_connection.data_channel.onopen = event => {
-                console.log("DATA CHANNEL OPENED");
-
-                console.log('Peer connect', peer_id);
-                peers_to_join.delete(peer_id);
-                on_peer_joined(peer_id, welcoming);
-                check_if_joined();
+                peer_connection.getStats(null).then((stats) => {
+                    console.log("DATA CHANNEL STATS: ");
+                    console.log(stats);
+                    stats.forEach((report) => {
+                        if (report.type === "candidate-pair") {
+                            console.log("ROUND TRIP TIME SECONDS TO PEER: %s : %s", peer_id, report.currentRoundTripTime);
+                        }
+                    });
+                    peers_to_join.delete(peer_id);
+                    on_peer_joined(peer_id, welcoming);
+                    check_if_joined();
+                });
             }
 
             peer_connection.data_channel.onclose = event => {
                 remove_peer(peer_id);
+            }
+
+            peer_connection.data_channel.onmessage = (event) => {
+                // Call the user provided callback
+                on_message(event.data, peer_id);
             }
 
             peer_connections[peer_id] = peer_connection;
@@ -130,6 +133,8 @@ let room = {
 
             // Received when joining a room for the first time.
             if (message.room_name) {
+                current_state = StateEnum.JOINING;
+
                 console.log("I AM JOINING ROOM: ", message.room_name);
                 console.log("PEERS TO JOIN: ", message.peers);
                 peers_to_join = new Set(message.peers);
@@ -229,6 +234,7 @@ let room = {
     },
     message_specific_peer(peer_id, data) {
         let peer = peer_connections[peer_id];
+
         peer.data_channel.send(data);
     }
 };
