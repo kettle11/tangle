@@ -4,9 +4,10 @@
     <canvas id="myCanvas" width="600" height="600"></canvas>
 
     <h1>Warp Core MVP</h1>
-    <script src="room.js"></script>
-    <script src="manager.js"></script>
-    <script>
+    <script src="room.js" type="module"></script>
+    <script src="manager.js" type="module"></script>
+    <script type="module">
+        import { getWarpCore } from "./manager.js";
         let start_time = Date.now();
 
         async function run() {
@@ -88,8 +89,6 @@
                     animation();
                 }
             };
-
-
         };
         run();
     </script>

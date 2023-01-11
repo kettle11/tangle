@@ -1,14 +1,37 @@
+const StateEnum = Object.freeze({ JOINING: 1, DISCONNECTED: 2, CONNECTED: 3 })
 
-let server_socket = new WebSocket("ws://34.75.244.129:8080");
+let server_socket;
+
 let peer_connections = {};
 let current_room_name = document.location.hash.substring(1);
+// This is relevant when joining a room.
+let peers_to_join = {};
+let current_state = StateEnum.DISCONNECTED;
 
-let current_peer = null;
-let peer_id_to_index = {};
-let peer_index_to_id = {};
+let room = {
+    setup(on_connected, on_disconnected, on_peer_joined, on_peer_left, on_message) {
+        if (!server_socket) {
+            server_socket = new WebSocket("ws://127.0.0.1:8081");
+        }
+        function check_if_joined() {
+            if (peers_to_join.size == 0) {
+                current_state = StateEnum.CONNECTED;
+                on_connected();
+            }
+        }
 
-var room_object = {
-    setup(on_peer_joined, on_peer_left, on_message) {
+        function remove_peer(peer_id) {
+            if (peer_connections[peer_id]) {
+                console.log("REMOVING PEER: ", peer_id);
+                peer_connections[peer_id].close();
+                delete peer_connections[peer_id];
+                console.log("NUMBER OF PEERS", peer_connections.length);
+
+                on_peer_left(peer_id);
+            }
+        }
+
+
         console.log("SETTING UP ROOM");
 
         if (server_socket.readyState == 1) {
@@ -43,9 +66,8 @@ var room_object = {
             // TODO: Report this bug.
             const channel = peer_connection.createDataChannel("sendChannel", { negotiated: true, id: 2, ordered: true });
             channel.onopen = (event) => {
-                console.log("CHANNEL OPENED");
-                // Finally we can send data!
-                channel.send("Hello peer!!!");
+                // console.log("CHANNEL OPENED");
+                // // Finally we can send data!
             }
             channel.onmessage = (event) => {
                 // Call the user provided callback
@@ -83,24 +105,13 @@ var room_object = {
                 console.log("DATA CHANNEL OPENED");
 
                 console.log('Peer connect', peer_id);
-                let peer_index = on_peer_joined(peer_id, welcoming);
-
-                peer_id_to_index[peer_id] = peer_index;
-                peer_index_to_id[peer_index] = peer_id;
+                peers_to_join.delete(peer_id);
+                on_peer_joined(peer_id, welcoming);
+                check_if_joined();
             }
 
             peer_connection.data_channel.onclose = event => {
-                console.log("REMOVING PEER");
-                delete peer_connections[peer_id];
-                console.log("NUMBER OF PEERS", Object.keys(peer_connections).length);
-
-                console.log('Peer close', peer_id);
-
-                on_peer_left(peer_id);
-
-                let peer_index = peer_id_to_index[peer_id];
-                delete peer_id_to_index[peer_id];
-                delete peer_index_to_id[peer_index];
+                remove_peer(peer_id);
             }
 
             peer_connections[peer_id] = peer_connection;
@@ -119,7 +130,15 @@ var room_object = {
 
             // Received when joining a room for the first time.
             if (message.room_name) {
-                console.log("ASSIGNED ROOM NAME: ", message.room_name);
+                console.log("I AM JOINING ROOM: ", message.room_name);
+                console.log("PEERS TO JOIN: ", message.peers);
+                peers_to_join = new Set(message.peers);
+
+                for (const [key, value] of Object.entries(peer_connections)) {
+                    peers_to_join.delete(key);
+                }
+                check_if_joined();
+
                 document.location =
                     document.location.origin.toString() +
                     '#' + message.room_name;
@@ -129,7 +148,7 @@ var room_object = {
             // Received when a new peer joins a room.
             if (message.join_room) {
                 console.log("PEER JOINING ROOM");
-                let peer_connection = make_rtc_peer_connection(peer_id, true);
+                make_rtc_peer_connection(peer_id, true);
                 console.log("ADDING PEER: ", peer_id);
             }
 
@@ -171,9 +190,25 @@ var room_object = {
                 }
             }
 
+            // Received when a peer leaves the room
+            if (message.disconnected_peer_id) {
+                peers_to_join.delete(message.disconnected_peer_id);
+                check_if_joined();
+                console.log("MESSAGE FROM SERVER: PEER LEFT: ", message.disconnected_peer_id);
+                remove_peer(message.disconnected_peer_id);
+
+            }
+
         };
 
         server_socket.onclose = function (event) {
+            // Disconnecting from the WebSocket is considered a full disconnect from the room.
+
+            on_disconnected();
+            current_state = StateEnum.DISCONNECTED;
+            peers_to_join = {};
+            peer_connections = {};
+
             if (event.wasClean) {
                 console.log(`[close] Connection closed cleanly, code=${event.code} reason=${event.reason}`);
             } else {
@@ -197,4 +232,4 @@ var room_object = {
         peer.data_channel.send(data);
     }
 };
-room_object
+export default room;

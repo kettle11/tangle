@@ -1,7 +1,9 @@
+import room from './room.js';
+
 const WASM_PAGE_SIZE = 65536;
+const MessageTypeEnum = Object.freeze({ WASM_CALL: 1, REQUEST_HEAP: 2, SENT_HEAP: 3 })
 
-async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_heap_load) => { }, on_update = () => { }) {
-
+export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_heap_load) => { }, on_update = () => { }) {
     let current_time = 0;
 
     let memory;
@@ -81,30 +83,45 @@ async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_heap_load
     let new_heap_offset = 0;
     let loaded_heap = true;
     let time_of_heap_load = 0;
-    const HEAP_CHUNK_SIZE = 16000; // 16kb
 
-    // TODO: Track peers
-    let peer_index = 0;
-    room_object.setup((peer_id, welcoming) => {
-        // on_peer_joined
-        peer_index += 1;
+    const peers = new Set();
 
-        if (!welcoming && loaded_heap) {
-            loaded_heap = false;
-            room_object.message_specific_peer(peer_id, JSON.stringify({
-                message_type: 2,
+    // Track when the last message from a peer was received.
+    const peer_last_received_message_time = {};
+
+    let peer_requesting_heap_from;
+
+    let function_calls_for_after_loading = [];
+
+    room.setup(() => {
+        console.log("CONNECTED TO ROOM. Next: Request the heap")
+
+        // Message an arbitrary peer to ask it for the heap.
+        if (peers.size > 0) {
+            // TODO: Handle the case where the peer is also still loading.
+            // It will need to respond to indicate that and this peer will need to ask 
+            // another peer for the heap.
+            let p = Array.from(peers);
+            peer_requesting_heap_from = p[0];
+            room.message_specific_peer(p[0], JSON.stringify({
+                message_type: MessageTypeEnum.REQUEST_HEAP,
             }));
         }
-
-        return peer_index;
     }, () => {
+        console.log("DISCONNECTED FROM ROOM");
+    }, (peer_id, welcoming) => {
+        // on_peer_joined
+        peers.add(peer_id);
+        peer_last_received_message_time[peer_id] = 0;
+    }, (peer_id) => {
         // on_peer_left
+        peers.delete(peer_id);
+        delete peer_last_received_message_time[peer_id];
     }, (message, peer_id) => {
         // on_message_received
 
         // If we're loading a multi-part heap from a peer.
-        // TODO: This does not account for edge-cases with multiple peers.
-        if (heap_bytes_remaining > 0) {
+        if (peer_requesting_heap_from === peer_id && heap_bytes_remaining > 0) {
             heap_bytes_remaining -= message.byteLength;
 
             let m = new Uint8Array(message);
@@ -132,34 +149,54 @@ async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_heap_load
                 new_heap = null;
                 loaded_heap = true;
 
+                for (let i = 0; i < function_calls_for_after_loading.length; i++) {
+                    let m = function_calls_for_after_loading[i];
+
+                    // Some of these actions may cause rollbacks.
+                    call_wasm_unnetworked(m.function_name, m.args, m.time);
+                }
+
                 on_load(time_of_heap_load);
             }
         } else {
             let m = JSON.parse(message);
-            if (m.message_type == 0) {
-                console.log("MESSAGE RECEIVED: ", m);
-                call_wasm_unnetworked(m.function_name, m.args, m.time);
-            } else if (m.message_type == 1) {
+            if (m.message_type == MessageTypeEnum.WASM_CALL) {
+                peer_last_received_message_time[peer_id] = peer_last_received_message_time;
+
+                if (loaded_heap) {
+                    console.log("MESSAGE RECEIVED: ", m);
+                    call_wasm_unnetworked(m.function_name, m.args, m.time);
+                } else {
+                    console.log("DEFERRING WASM CALL UNTIL LOAD IS DONE: ", m);
+                    function_calls_for_after_loading.push(m);
+                }
+            } else if (m.message_type == MessageTypeEnum.SENT_HEAP) {
                 console.log("BEGINNING HEAP LOAD");
                 heap_bytes_remaining = m.heap_size;
                 new_heap_offset = 0;
                 console.log("HEAP BYTES REMAINING: ", heap_bytes_remaining);
 
                 new_heap = new Uint8Array(m.heap_size);
+
+                actions = m.actions;
                 time_of_heap_load = m.time;
-            } else if (m.message_type == 2) {
+            } else if (m.message_type == MessageTypeEnum.REQUEST_HEAP) {
                 // TODO: This could be an unloaded peer.
                 // That should be avoided somehow.
                 if (loaded_heap) {
-                    room_object.message_specific_peer(peer_id, JSON.stringify({
-                        message_type: 1,
+                    room.message_specific_peer(peer_id, JSON.stringify({
+                        message_type: MessageTypeEnum.SENT_HEAP,
                         heap_size: wasm_memory.buffer.byteLength,
-                        time: current_time
+                        time: current_time,
+                        // TODO: This could be rather large as JSON, a more efficient encoding should be used.
+                        past_actions: actions,
                     }));
 
                     console.log("HEAP SIZE: ", wasm_memory.buffer.byteLength);
+
+                    const HEAP_CHUNK_SIZE = 16000; // 16kb
                     for (let i = 0; i < wasm_memory.buffer.byteLength; i += HEAP_CHUNK_SIZE) {
-                        room_object.message_specific_peer(peer_id, new Uint8Array(wasm_memory.buffer).slice(i, Math.min(i + HEAP_CHUNK_SIZE, wasm_memory.buffer.byteLength)));
+                        room.message_specific_peer(peer_id, new Uint8Array(wasm_memory.buffer).slice(i, Math.min(i + HEAP_CHUNK_SIZE, wasm_memory.buffer.byteLength)));
                     }
                 } else {
                     console.error("FATAL ERROR: PEER IS REQUESTING HEAP BUT I DO NOT HAVE IT YET");
@@ -196,6 +233,7 @@ async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_heap_load
         }
 
         // Undo everything that ocurred prior to this event.
+        // TODO: Detect if this event has occurred too far in the past and should be ignored.
         await rewind(time);
 
         function_calls.splice(i, 0, { function_name: function_name, args: args, time: time });
@@ -275,8 +313,8 @@ async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_heap_load
             if (actions_len != actions.length) {
                 // Network this call
                 // TODO: More efficient encoding
-                room_object.broadcast(JSON.stringify(({
-                    message_type: 0,
+                room.broadcast(JSON.stringify(({
+                    message_type: MessageTypeEnum.WASM_CALL,
                     function_name: function_name,
                     time: time,
                     args: args
