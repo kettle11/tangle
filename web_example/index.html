@@ -35,7 +35,6 @@
                         // console.error(decoded_string);
                     },
                     draw_rect: function (r, g, b, a, x, y, w, h) {
-                        console.log("DRAW RECT CALLED");
                         ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
                         ctx.fillStyle =
                             ctx.fillRect(x, y, w, h);
@@ -45,49 +44,31 @@
 
             let current_animation_time = Date.now();
             let warpcore = await getWarpCore(wasm_binary, imports,
+                1000 / 60,
                 // On Load
                 async (time) => {
                     current_animation_time = time;
-                    await warpcore.call_wasm("draw", [], Date.now());
+                    async function animation() {
+                        await warpcore.call_wasm("draw", [], Date.now());
+
+                        // TODO: THIS IS SUPER WRONG AND WILL DESYNC IF PEERS HAVE FLAKEY CONNECTIONS
+                        warpcore.remove_history(current_animation_time - 2000);
+                        window.requestAnimationFrame(animation);
+                    }
+                    await animation();
                 },
                 // On update
                 async () => {
-                    await warpcore.call_wasm("draw", [], Date.now());
+                    //await warpcore.call_wasm("draw", [], Date.now());
                 });
 
-            await warpcore.call_wasm("draw", [], Date.now());
-
-
-            let last_time = Date.now();
-            let time_accumulator = 0;
-
-            let time_step = 1.0 / 60.0;
-
-            async function animation() {
-                let time_now = Date.now();
-                let time_elapsed = time_now - last_time;
-
-                time_accumulator += time_elapsed;
-                while (time_accumulator > time_step) {
-                    time_accumulator -= time_step;
-                    current_animation_time += time_step;
-                    await warpcore.call_wasm_unnetworked("draw", [], current_animation_time);
-                }
-
-                last_time = time_now;
-
-                window.requestAnimationFrame(animation);
-            }
 
             document.onkeydown = async (event) => {
                 if (event.code == "KeyI") {
-                    await warpcore.call_wasm("step", [], Date.now());
+                    //  await warpcore.call_wasm("step", [], Date.now());
                     await warpcore.call_wasm("draw", [], Date.now());
                 }
 
-                if (event.code == "KeyA") {
-                    animation();
-                }
             };
         };
         run();
