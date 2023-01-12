@@ -42,12 +42,19 @@
                 }
             };
 
+            let player_id = 0;
             let current_animation_time = Date.now();
             let warpcore = await getWarpCore(wasm_binary, imports,
                 1000 / 60,
                 // On Load
                 async (time) => {
+
+                    // TODO: This ID might change if this is rolled back.
+                    player_id = await warpcore.call_wasm("add_player", [Math.random() * 255, Math.random() * 255, Math.random() * 255], Date.now());
+                    console.log("NEW PLAYER WITH ID: ", player_id);
+
                     current_animation_time = time;
+
                     async function animation() {
                         context.clearRect(0, 0, context.canvas.width, context.canvas.height);
                         // This is OK to use Date.now because the script doesn't actually edit
@@ -69,19 +76,39 @@
             document.onkeydown = async (event) => {
 
                 if (event.code == "ArrowLeft") {
-                    await warpcore.call_wasm("left", [], Date.now());
+                    await warpcore.call_wasm("set_x_axis", [player_id, -1], Date.now());
                 }
 
                 if (event.code == "ArrowRight") {
-                    await warpcore.call_wasm("right", [], Date.now());
+                    await warpcore.call_wasm("set_x_axis", [player_id, 1], Date.now());
                 }
 
                 if (event.code == "ArrowUp") {
-                    await warpcore.call_wasm("up", [], Date.now());
+                    await warpcore.call_wasm("set_y_axis", [player_id, -1], Date.now());
                 }
 
                 if (event.code == "ArrowDown") {
-                    await warpcore.call_wasm("down", [], Date.now());
+                    await warpcore.call_wasm("set_y_axis", [player_id, 1], Date.now());
+                }
+
+            };
+
+            document.onkeyup = async (event) => {
+
+                if (event.code == "ArrowLeft") {
+                    await warpcore.call_wasm("set_x_axis", [player_id, 0], Date.now());
+                }
+
+                if (event.code == "ArrowRight") {
+                    await warpcore.call_wasm("set_x_axis", [player_id, 0], Date.now());
+                }
+
+                if (event.code == "ArrowUp") {
+                    await warpcore.call_wasm("set_y_axis", [player_id, 0], Date.now());
+                }
+
+                if (event.code == "ArrowDown") {
+                    await warpcore.call_wasm("set_y_axis", [player_id, 0], Date.now());
                 }
 
             };

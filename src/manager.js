@@ -211,17 +211,20 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
     });
 
     async function recurring_calls_until(time) {
-        let i = Math.floor(current_time / recurring_call_interval);
+        // TODO: This does not correctly handle events that occur directly on a time stamp.
+        let i = Math.floor(current_time / recurring_call_interval) + 1;
         let n = Math.floor(time / recurring_call_interval);
 
-        for (; i < n; i++) {
+        for (; i <= n; i++) {
             current_time = i * recurring_call_interval;
-            await call_wasm_unnetworked("fixed_update", [current_time], current_time);
+            await call_wasm_unnetworked("fixed_update", [current_time], current_time, true);
         }
     }
 
-    async function call_wasm_unnetworked(function_name, args, time) {
-        await recurring_calls_until(time);
+    async function call_wasm_unnetworked(function_name, args, time, skip_recurring = false) {
+        if (!skip_recurring) {
+            await recurring_calls_until(time);
+        }
 
         let v0 = function_calls.length;
 
@@ -244,7 +247,7 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
                 }
 
                 if (function_name == call.function_name && arrayEquals(call.args, args)) {
-                    console.log("IDENTICAL FUNCTION CALL");
+                    console.log("IDENTICAL FUNCTION CALL: %s %s", function_name, time);
                     return;
                 }
 
@@ -362,6 +365,16 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
             // Remove all the elements that were before this.
             actions.splice(step, actions.length);
             // console.log("REMOVING HISTORY. NEW LENGTH: ", actions.length);
+
+            step = 0;
+            for (; step < function_calls.length; step++) {
+                if (function_calls[step].time >= timestamp) {
+                    break;
+                }
+            }
+
+            function_calls.splice(step, function_calls.length);
+
         }
     };
 }

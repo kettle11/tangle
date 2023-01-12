@@ -8,57 +8,58 @@ struct Color {
     a: u8,
 }
 
-#[derive(Copy, Clone)]
-struct Rectangle {
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
+struct WorldState {
+    players: Vec<Player>,
 }
 
-struct WorldState {
+#[derive(Copy, Clone)]
+struct Player {
+    direction: (u32, u32),
     position: (u32, u32),
-    rects: Vec<(Color, Rectangle)>,
+    color: Color,
+}
+
+#[no_mangle]
+extern "C" fn add_player(r: u8, g: u8, b: u8) -> usize {
+    unsafe {
+        STATE.players.push(Player {
+            direction: (0, 0),
+            position: (0, 0),
+            color: Color { r, g, b, a: 255 },
+        });
+        STATE.players.len() - 1
+    }
 }
 
 static mut STATE: WorldState = WorldState {
-    position: (0, 0),
-    rects: Vec::new(),
+    players: Vec::new(),
 };
 
 const SPEED: u32 = 10;
 
 #[no_mangle]
-extern "C" fn left() {
+extern "C" fn set_x_axis(player: usize, state: u32) {
     unsafe {
-        STATE.position.0 -= SPEED;
+        STATE.players.get_mut(player).map(|p| p.direction.0 = state);
     }
 }
 
 #[no_mangle]
-extern "C" fn right() {
+extern "C" fn set_y_axis(player: usize, state: u32) {
     unsafe {
-        STATE.position.0 += SPEED;
+        STATE.players.get_mut(player).map(|p| p.direction.1 = state);
     }
 }
 
 #[no_mangle]
-extern "C" fn up() {
+extern "C" fn fixed_update(_time: u32) {
     unsafe {
-        STATE.position.1 -= SPEED;
-    }
-}
+        for player in STATE.players.iter_mut() {
+            player.position.0 += player.direction.0 * SPEED;
+            player.position.1 += player.direction.1 * SPEED;
+        }
 
-#[no_mangle]
-extern "C" fn down() {
-    unsafe {
-        STATE.position.1 += SPEED;
-    }
-}
-
-#[no_mangle]
-extern "C" fn fixed_update(time: u32) {
-    unsafe {
+        /*
         // let offset = (STATE.rects.len() * 10) as u32;
 
         let time_frame = 6000; // 6 seconds
@@ -78,14 +79,20 @@ extern "C" fn fixed_update(time: u32) {
                 h: 100,
             },
         ));
+        */
     }
 }
 
 #[no_mangle]
 extern "C" fn draw() {
     unsafe {
-        for (Color { r, g, b, a }, Rectangle { x, y, w, h }) in STATE.rects.iter().copied() {
-            draw_rect(r, g, b, a, x, y, w, h);
+        for Player {
+            color: Color { r, g, b, a },
+            position: (x, y),
+            ..
+        } in STATE.players.iter().copied()
+        {
+            draw_rect(r, g, b, a, x, y, 100, 100);
         }
     }
 }
