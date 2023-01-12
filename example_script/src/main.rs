@@ -17,30 +17,42 @@ struct Rectangle {
 }
 
 struct WorldState {
+    position: (u32, u32),
     rects: Vec<(Color, Rectangle)>,
 }
 
-static mut STATE: WorldState = WorldState { rects: Vec::new() };
+static mut STATE: WorldState = WorldState {
+    position: (0, 0),
+    rects: Vec::new(),
+};
+
+const SPEED: u32 = 10;
 
 #[no_mangle]
-extern "C" fn step() {
+extern "C" fn left() {
     unsafe {
-        let offset = (STATE.rects.len() * 10) as u32;
+        STATE.position.0 -= SPEED;
+    }
+}
 
-        STATE.rects.push((
-            Color {
-                r: 255,
-                g: 0,
-                b: 100,
-                a: 255,
-            },
-            Rectangle {
-                x: offset,
-                y: offset,
-                w: 100,
-                h: 100,
-            },
-        ));
+#[no_mangle]
+extern "C" fn right() {
+    unsafe {
+        STATE.position.0 += SPEED;
+    }
+}
+
+#[no_mangle]
+extern "C" fn up() {
+    unsafe {
+        STATE.position.1 -= SPEED;
+    }
+}
+
+#[no_mangle]
+extern "C" fn down() {
+    unsafe {
+        STATE.position.1 += SPEED;
     }
 }
 
@@ -60,8 +72,8 @@ extern "C" fn fixed_update(time: u32) {
                 a: 255,
             },
             Rectangle {
-                x: 100,
-                y: 100,
+                x: STATE.position.0,
+                y: STATE.position.1,
                 w: 100,
                 h: 100,
             },

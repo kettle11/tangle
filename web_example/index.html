@@ -12,9 +12,9 @@
 
         async function run() {
             var canvas = document.getElementById("myCanvas");
-            var ctx = canvas.getContext("2d");
-            ctx.fillStyle = "blue";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            var context = canvas.getContext("2d");
+            context.fillStyle = "blue";
+            context.fillRect(0, 0, canvas.width, canvas.height);
 
             let wasm_binary = await fetch("example_script.wasm").then(response => response.arrayBuffer());
             let imports = {
@@ -35,9 +35,9 @@
                         // console.error(decoded_string);
                     },
                     draw_rect: function (r, g, b, a, x, y, w, h) {
-                        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
-                        ctx.fillStyle =
-                            ctx.fillRect(x, y, w, h);
+                        context.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
+                        context.fillStyle =
+                            context.fillRect(x, y, w, h);
                     }
                 }
             };
@@ -49,10 +49,13 @@
                 async (time) => {
                     current_animation_time = time;
                     async function animation() {
+                        context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+                        // This is OK to use Date.now because the script doesn't actually edit
+                        // anything (yet)
                         await warpcore.call_wasm("draw", [], Date.now());
 
                         // TODO: THIS IS SUPER WRONG AND WILL DESYNC IF PEERS HAVE FLAKEY CONNECTIONS
-                        warpcore.remove_history(current_animation_time - 2000);
+                        warpcore.remove_history(Date.now() - 2000);
                         window.requestAnimationFrame(animation);
                     }
                     await animation();
@@ -64,9 +67,21 @@
 
 
             document.onkeydown = async (event) => {
-                if (event.code == "KeyI") {
-                    //  await warpcore.call_wasm("step", [], Date.now());
-                    await warpcore.call_wasm("draw", [], Date.now());
+
+                if (event.code == "ArrowLeft") {
+                    await warpcore.call_wasm("left", [], Date.now());
+                }
+
+                if (event.code == "ArrowRight") {
+                    await warpcore.call_wasm("right", [], Date.now());
+                }
+
+                if (event.code == "ArrowUp") {
+                    await warpcore.call_wasm("up", [], Date.now());
+                }
+
+                if (event.code == "ArrowDown") {
+                    await warpcore.call_wasm("down", [], Date.now());
                 }
 
             };
