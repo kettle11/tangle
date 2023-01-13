@@ -11,7 +11,7 @@ let current_state = StateEnum.DISCONNECTED;
 let room = {
     setup(on_connected, on_disconnected, on_peer_joined, on_peer_left, on_message) {
         if (!server_socket) {
-            server_socket = new WebSocket("ws://0.0.0.0:8081");
+            server_socket = new WebSocket("ws://192.168.68.109:8081");
         }
         function check_if_joined() {
             if (current_state == StateEnum.JOINING && peers_to_join.size == 0) {
@@ -25,12 +25,11 @@ let room = {
                 console.log("REMOVING PEER: ", peer_id);
                 peer_connections[peer_id].close();
                 delete peer_connections[peer_id];
-                console.log("NUMBER OF PEERS", peer_connections.length);
+                console.log("NUMBER OF PEERS", Object.keys(peer_connections).length);
 
                 on_peer_left(peer_id);
             }
         }
-
 
         console.log("SETTING UP ROOM");
 

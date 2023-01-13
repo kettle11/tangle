@@ -1,9 +1,14 @@
 <html>
 
 <body>
-    <canvas id="myCanvas" width="600" height="600"></canvas>
 
-    <h1>Warp Core MVP</h1>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    </head>
+
+    <body style="margin:0; overflow-y: hidden;overflow-x: hidden; touch-action: none;">
+        <canvas id="myCanvas" style="width:100vw; height: 100vh; "></canvas>
+    </body>
     <script src="room.js" type="module"></script>
     <script src="manager.js" type="module"></script>
     <script type="module">
@@ -11,8 +16,19 @@
         let start_time = Date.now();
 
         async function run() {
+            const image = new Image(60, 45); // Using optional size for image
+            image.src = "kenney_pixelplatformer/Tilemap/characters.png";
+
             var canvas = document.getElementById("myCanvas");
             var context = canvas.getContext("2d");
+
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
+
+            window.onresize = function (event) {
+                canvas.width = canvas.clientWidth;
+                canvas.height = canvas.clientHeight;
+            }
             context.fillStyle = "blue";
             context.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -38,6 +54,15 @@
                         context.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
                         context.fillStyle =
                             context.fillRect(x, y, w, h);
+                    },
+                    draw_circle: function (r, g, b, a, x, y, radius) {
+                        context.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
+                        context.beginPath();
+                        context.arc(x, y, radius, 0, 2 * Math.PI);
+                        context.fill();
+                    },
+                    draw_image: function (sx, sy, sw, sh, x, y, w, h) {
+                        context.drawImage(image, sx, sy, 25, 25, x, y, w, h);
                     }
                 }
             };
@@ -50,16 +75,18 @@
                 async (time) => {
 
                     // TODO: This ID might change if this is rolled back.
-                    player_id = await warpcore.call_wasm("add_player", [Math.random() * 255, Math.random() * 255, Math.random() * 255], Date.now());
+                    player_id = await warpcore.call_wasm("add_player", [Math.random() * 255, Math.random() * 255, Math.random() * 255, Math.random() * 9], Date.now());
                     console.log("NEW PLAYER WITH ID: ", player_id);
 
                     current_animation_time = time;
 
                     async function animation() {
+
+
                         context.clearRect(0, 0, context.canvas.width, context.canvas.height);
                         // This is OK to use Date.now because the script doesn't actually edit
                         // anything (yet)
-                        await warpcore.call_wasm("draw", [], Date.now());
+                        await warpcore.call_wasm_unnetworked("draw", [], Date.now());
 
                         // TODO: THIS IS SUPER WRONG AND WILL DESYNC IF PEERS HAVE FLAKEY CONNECTIONS
                         warpcore.remove_history(Date.now() - 2000);
@@ -111,6 +138,10 @@
                     await warpcore.call_wasm("set_y_axis", [player_id, 0], Date.now());
                 }
 
+            };
+
+            canvas.onpointerdown = async (event) => {
+                await warpcore.call_wasm("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255], Date.now());
             };
         };
         run();

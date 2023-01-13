@@ -6,3 +6,5 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+kmath = {path = "../../koi2/crates/kmath"}
+rapier2d = "0.14.0"

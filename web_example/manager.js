@@ -3,7 +3,7 @@ import room from './room.js';
 const WASM_PAGE_SIZE = 65536;
 const MessageTypeEnum = Object.freeze({ WASM_CALL: 1, REQUEST_HEAP: 2, SENT_HEAP: 3 })
 
-export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_heap_load) => { }, on_update = () => { }) {
+export async function getWarpCore(wasm_binary, imports_in, recurring_call_interval, on_load = (time_of_heap_load) => { }, on_update = () => { }) {
     let current_time = 0;
 
     let memory;
@@ -52,16 +52,16 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
 
     imports_in.wasm_guardian = {
         on_store: function (location, size) {
-            console.log("on_store called: ", location, size);
+            // console.log("on_store called: ", location, size);
             let old_value = new Uint8Array(new Uint8Array(wasm_memory.buffer, location, size));
             actions.push({ type: "store", location: location, old_value: old_value, time: current_time });
         },
         on_grow: function (pages) {
-            console.log("on_grow called: ", pages);
+            // console.log("on_grow called: ", pages);
             actions.push({ type: "grow", old_pages: wasm_memory.buffer.byteLength / WASM_PAGE_SIZE, time: current_time });
         },
         on_global_set: function (id) {
-            console.log("on_global_set called: ", id);
+            // console.log("on_global_set called: ", id);
             let global_id = "wg_global_" + id;
             actions.push({ type: "global_set", global_id: global_id, old_value: wasm_instance.exports[global_id], time: current_time });
         },
@@ -106,6 +106,9 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
             room.message_specific_peer(p[0], JSON.stringify({
                 message_type: MessageTypeEnum.REQUEST_HEAP,
             }));
+        } else {
+            current_time = Date.now();
+            on_load(current_time);
         }
     }, () => {
         console.log("DISCONNECTED FROM ROOM");
@@ -117,7 +120,7 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
         // on_peer_left
         peers.delete(peer_id);
         delete peer_last_received_message_time[peer_id];
-    }, (message, peer_id) => {
+    }, async (message, peer_id) => {
         // on_message_received
 
         // If we're loading a multi-part heap from a peer.
@@ -135,7 +138,6 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
                 console.log("RECEIVED HEAP");
 
                 // Reset state tracking.
-                // TODO: Reapply actions that occured after time.
 
                 function_calls = [];
                 actions = [];
@@ -150,12 +152,15 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
                 loaded_heap = true;
 
                 for (let i = 0; i < function_calls_for_after_loading.length; i++) {
-                    let m = function_calls_for_after_loading[i];
+                    console.log("WASM CALL AFTER LOADING");
 
+                    let m = function_calls_for_after_loading[i];
                     // Some of these actions may cause rollbacks.
-                    call_wasm_unnetworked(m.function_name, m.args, m.time);
+                    await call_wasm_unnetworked(m.function_name, m.args, m.time);
                 }
 
+                // TODO: Is this correct
+                current_time = time_of_heap_load;
                 on_load(time_of_heap_load);
             }
         } else {
@@ -165,7 +170,7 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
 
                 if (loaded_heap) {
                     console.log("MESSAGE RECEIVED: ", m);
-                    call_wasm_unnetworked(m.function_name, m.args, m.time);
+                    await call_wasm_unnetworked(m.function_name, m.args, m.time);
                 } else {
                     console.log("DEFERRING WASM CALL UNTIL LOAD IS DONE: ", m);
                     function_calls_for_after_loading.push(m);
@@ -205,7 +210,24 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
         }
     });
 
-    async function call_wasm_unnetworked(function_name, args, time) {
+    async function recurring_calls_until(time) {
+        // TODO: This does not correctly handle events that occur directly on a time stamp.
+        let i = Math.ceil(current_time / recurring_call_interval);
+        let n = Math.floor(time / recurring_call_interval);
+
+        for (; i <= n; i++) {
+            current_time = i * recurring_call_interval;
+            await call_wasm_unnetworked("fixed_update", [current_time], current_time, true);
+        }
+    }
+
+    async function call_wasm_unnetworked(function_name, args, time, skip_recurring = false) {
+        if (!skip_recurring) {
+            await recurring_calls_until(time);
+        }
+
+        let v0 = function_calls.length;
+
         let i = function_calls.length;
         for (; i > 0; i--) {
             let call = function_calls[i - 1];
@@ -224,28 +246,48 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
                         a.every((val, index) => val === b[index]);
                 }
 
-                if (function_name == call.function_name && arrayEquals(call.args, args)) {
-                    console.log("IDENTICAL FUNCTION CALL");
-                    return;
+                // TODO: Define a further ordering based on args.
+                if (call.function_name < function_name) {
+                    break;
                 }
 
+                if (function_name == call.function_name) {
+                    if (arrayEquals(call.args, args)) {
+                        console.log("IDENTICAL FUNCTION CALL: %s %s", function_name, time);
+                        return;
+                    } else {
+                        console.error("UNHANLED DUPLICATE FUNCTION CALL CASE");
+                    }
+                }
             }
         }
 
-        // Undo everything that ocurred prior to this event.
+        let v1 = function_calls.length;
+
+        // Undo everything that ocurred after this event.
         // TODO: Detect if this event has occurred too far in the past and should be ignored.
         await rewind(time);
 
-        function_calls.splice(i, 0, { function_name: function_name, args: args, time: time });
+        let v2 = function_calls.length;
+
         current_time = time;
 
         let actions_count = actions.length;
         let result = wasm_instance.exports[function_name](...args);
 
+        let something_changed = actions_count != actions.length;
+
+        // Only record this function_call if something actually changed.
+        if (something_changed) {
+            // console.log("RECORDING FUNCTION CALL WITH TIME: ", function_name, time);
+            function_calls.splice(i, 0, { function_name: function_name, args: args, time: time });
+            i += 1;
+        }
+
         // Replay all function calls that occur after this event.
-        for (let j = i + 1; j < function_calls.length; j++) {
-            console.log("REPLAYING FUNCTION CALL");
+        for (let j = i; j < function_calls.length; j++) {
             let call = function_calls[j];
+            console.log("REPLAYING FUNCTION CALL: %s %s", call.function_name, call.time);
             current_time = call.current_time;
             wasm_instance.exports[call.function_name](...call.args)
         }
@@ -253,15 +295,17 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
         current_time = time;
 
         // Only issue on `up_update` event if this actually changed something.
-        if (actions_count != actions.length) {
+        if (something_changed) {
             on_update();
         }
 
-        return result;
+        return { result: result, something_changed: something_changed };
     }
 
     async function rewind(timestamp) {
-        while (actions.at(-1) && actions.at(-1).time > timestamp) {
+        while (actions[actions.length - 1] && actions[actions.length - 1].time > timestamp) {
+            console.log("REWINDING");
+
             let popped_action = actions.pop();
 
             switch (popped_action.type) {
@@ -294,7 +338,7 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
                 case "global_set":
                     console.log("REVERSING GLOBAL SET");
 
-                    wasm_instance.exports[popped_action.global_id] = popped_action.old_value;
+                    wasm_instance.exports[popped_action.global_id].value = popped_action.old_value;
                     break;
             }
         }
@@ -302,15 +346,13 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
 
     return {
         call_wasm_unnetworked: async function (function_name, args, time) {
-            return await call_wasm_unnetworked(function_name, args, time);
+            return await call_wasm_unnetworked(function_name, args, time).result;
         },
         call_wasm: async function (function_name, args, time) {
-
-            let actions_len = actions.length;
             let result = await call_wasm_unnetworked(function_name, args, time);
 
             // Only network this call if it resulted in persistent changes.
-            if (actions_len != actions.length) {
+            if (result.something_changed) {
                 // Network this call
                 // TODO: More efficient encoding
                 room.broadcast(JSON.stringify(({
@@ -321,7 +363,7 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
                 })));
             }
 
-            return result;
+            return result.result;
         },
         remove_history: function (timestamp) {
             let step = 0;
@@ -333,6 +375,17 @@ export async function getWarpCore(wasm_binary, imports_in, on_load = (time_of_he
 
             // Remove all the elements that were before this.
             actions.splice(step, actions.length);
+            // console.log("REMOVING HISTORY. NEW LENGTH: ", actions.length);
+
+            step = 0;
+            for (; step < function_calls.length; step++) {
+                if (function_calls[step].time >= timestamp) {
+                    break;
+                }
+            }
+
+            function_calls.splice(step, function_calls.length);
+
         }
     };
 }

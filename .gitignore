@@ -1,4 +1,5 @@
 /target
 /example_script/target/
+/web_example/kenney_pixelplatformer/
 /web_example/*.wasm
 .DS_Store

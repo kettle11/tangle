@@ -212,7 +212,7 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
 
     async function recurring_calls_until(time) {
         // TODO: This does not correctly handle events that occur directly on a time stamp.
-        let i = Math.floor(current_time / recurring_call_interval) + 1;
+        let i = Math.ceil(current_time / recurring_call_interval);
         let n = Math.floor(time / recurring_call_interval);
 
         for (; i <= n; i++) {
@@ -246,11 +246,19 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
                         a.every((val, index) => val === b[index]);
                 }
 
-                if (function_name == call.function_name && arrayEquals(call.args, args)) {
-                    console.log("IDENTICAL FUNCTION CALL: %s %s", function_name, time);
-                    return;
+                // TODO: Define a further ordering based on args.
+                if (call.function_name < function_name) {
+                    break;
                 }
 
+                if (function_name == call.function_name) {
+                    if (arrayEquals(call.args, args)) {
+                        console.log("IDENTICAL FUNCTION CALL: %s %s", function_name, time);
+                        return;
+                    } else {
+                        console.error("UNHANLED DUPLICATE FUNCTION CALL CASE");
+                    }
+                }
             }
         }
 
@@ -273,10 +281,11 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
         if (something_changed) {
             // console.log("RECORDING FUNCTION CALL WITH TIME: ", function_name, time);
             function_calls.splice(i, 0, { function_name: function_name, args: args, time: time });
+            i += 1;
         }
 
         // Replay all function calls that occur after this event.
-        for (let j = i + 1; j < function_calls.length; j++) {
+        for (let j = i; j < function_calls.length; j++) {
             let call = function_calls[j];
             console.log("REPLAYING FUNCTION CALL: %s %s", call.function_name, call.time);
             current_time = call.current_time;
@@ -294,7 +303,9 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
     }
 
     async function rewind(timestamp) {
-        while (actions.at(-1) && actions.at(-1).time > timestamp) {
+        while (actions[actions.length - 1] && actions[actions.length - 1].time > timestamp) {
+            console.log("REWINDING");
+
             let popped_action = actions.pop();
 
             switch (popped_action.type) {
@@ -352,7 +363,7 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
                 })));
             }
 
-            return result;
+            return result.result;
         },
         remove_history: function (timestamp) {
             let step = 0;
