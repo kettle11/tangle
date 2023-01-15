@@ -1,9 +1,12 @@
 use core::cell::RefCell;
+use std::io::Write;
 
 thread_local! {
     /// Data sent from the host.
     /// Unique to this Wasm thread.
     pub static DATA_FROM_HOST: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    pub static DATA_SWAP: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+
 }
 
 /// Called by the host to reserve scratch space to pass data into kwasm.
@@ -13,7 +16,14 @@ pub extern "C" fn reserve_space(space: usize) -> *mut u8 {
     DATA_FROM_HOST.with(|d| {
         let mut d = d.borrow_mut();
         d.clear();
-        d.resize(space, 0);
+        d.reserve(space);
+
+        // This is obviously unsafe, but zeroing the memory was taking a few milliseconds
+        // for large values.
+        unsafe {
+            d.set_len(space);
+        }
+        //d.resize(space, 0);
         d.as_mut_ptr()
     })
 }
@@ -78,14 +88,75 @@ pub fn setup_panic_hook() {
     });
 }
 
-static mut GLOBAL: u32 = 2;
+// Hashes data in DATA_FROM_HOST and returns it in DATA_FROM_HOST
+#[no_mangle]
+pub extern "C" fn xx3_128_bit_hash() {
+    DATA_FROM_HOST.with(|d| {
+        let mut d = d.borrow_mut();
+        let result = xxhash_rust::xxh3::xxh3_128(&d);
+        d.clear();
+        d.write(&result.to_be_bytes()).unwrap();
+    })
+}
+
+/// Write data with reserve_space and then returns the new data location as a pointer and length written
+/// to data.
+#[no_mangle]
+pub extern "C" fn gzip_encode() {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), Default::default());
+
+    DATA_FROM_HOST.with(|d| {
+        let mut input = d.borrow_mut();
+        let input: &mut Vec<u8> = &mut input;
+        encoder.write_all(&input).unwrap();
+        let result = encoder.finish().unwrap();
+
+        input.clear();
+        input
+            .write(&(result.as_ptr() as u32).to_le_bytes())
+            .unwrap();
+        input.write(&(result.len() as u32).to_le_bytes()).unwrap();
+
+        DATA_SWAP.with(|d| {
+            d.replace(result);
+        });
+    });
+}
 
 #[no_mangle]
-pub extern "C" fn test_message() -> u32 {
-    // log(&"HELLO FROM RUST".to_string());
-    unsafe {
-        GLOBAL += 3;
-        GLOBAL
-        //&GLOBAL as *const _ as _
+pub extern "C" fn gzip_decode() {
+    use std::io::Read;
+    DATA_FROM_HOST.with(|d| {
+        let mut input = d.borrow_mut();
+
+        DATA_SWAP.with(|d| {
+            let mut d = d.borrow_mut();
+
+            {
+                let mut decoder = flate2::read::GzDecoder::new(input.as_slice());
+                d.clear();
+                decoder.read_to_end(&mut d).unwrap();
+            }
+
+            input.clear();
+            input.write(&(d.as_ptr() as u32).to_le_bytes()).unwrap();
+            input.write(&(d.len() as u32).to_le_bytes()).unwrap();
+        });
+    });
+}
+
+/*
+#[test]
+fn test_compression() {
+    /
+    let mut output = Vec::new();
+
+    {
+        let bytes = include_bytes!("../web_example/example_script.wasm");
+
+        encoder.write_all(&bytes).unwrap();
+        let result = encoder.finish().unwrap();
+        result.len()
     }
 }
+*/

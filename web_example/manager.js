@@ -27,6 +27,7 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
 
     // Use the wasm_guardian Wasm binary to modify the passed in Wasm binary.
     let result = await WebAssembly.instantiateStreaming(fetch("warpcore_mvp.wasm"), imports);
+    let warp_core_wasm_exports = result.instance.exports;
     memory = result.instance.exports.memory;
 
     // For now there's only one wasm instance at a time
@@ -39,19 +40,45 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
 
     // Prepare the wasm module.
     let length = wasm_binary.byteLength;
-    let pointer = result.instance.exports.reserve_space(length);
+    let pointer = warp_core_wasm_exports.reserve_space(length);
 
     const data_location = new Uint8Array(memory.buffer, pointer, length);
     data_location.set(new Uint8Array(wasm_binary));
+    warp_core_wasm_exports.prepare_wasm();
 
-    result.instance.exports.prepare_wasm();
-
-    let output_ptr = result.instance.exports.get_output_ptr();
-    let output_len = result.instance.exports.get_output_len();
+    let output_ptr = warp_core_wasm_exports.get_output_ptr();
+    let output_len = warp_core_wasm_exports.get_output_len();
     const output_wasm = new Uint8Array(memory.buffer, output_ptr, output_len);
+
+    function gzip_encode(data_to_compress) {
+        let pointer = warp_core_wasm_exports.reserve_space(data_to_compress.byteLength);
+        const destination = new Uint8Array(memory.buffer, pointer, data_to_compress.byteLength);
+        destination.set(new Uint8Array(data_to_compress));
+
+        warp_core_wasm_exports.gzip_encode();
+        let result_pointer = new Uint32Array(memory.buffer, pointer, 2);
+        let result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
+        console.log("COMPRESSED LENGTH: ", result_data.byteLength);
+        console.log("COMPRESSION RATIO: ", data_to_compress.byteLength / result_data.byteLength);
+        return result_data;
+    }
+
+    function gzip_decode(data_to_decode) {
+        let pointer = warp_core_wasm_exports.reserve_space(data_to_decode.byteLength);
+        const destination = new Uint8Array(memory.buffer, pointer, data_to_decode.byteLength);
+        destination.set(new Uint8Array(data_to_decode));
+
+        warp_core_wasm_exports.gzip_decode();
+        let result_pointer = new Uint32Array(memory.buffer, pointer, 2);
+        let result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
+        return result_data;
+    }
 
     imports_in.wasm_guardian = {
         on_store: function (location, size) {
+            if (location > wasm_memory.buffer.length) {
+                console.error("OUT OF BOUNDS MEMORY WRITE");
+            }
             // console.log("on_store called: ", location, size);
             let old_value = new Uint8Array(new Uint8Array(wasm_memory.buffer, location, size));
             actions.push({ type: "store", location: location, old_value: old_value, time: current_time });
@@ -142,13 +169,15 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
                 function_calls = [];
                 actions = [];
 
-                let page_diff = (new_heap.byteLength - wasm_memory.buffer.byteLength) / WASM_PAGE_SIZE;
+                let decoded_heap = gzip_decode(new_heap);
+                new_heap = null;
+
+                let page_diff = (decoded_heap.byteLength - wasm_memory.buffer.byteLength) / WASM_PAGE_SIZE;
                 if (page_diff > 0) {
                     wasm_memory.grow(page_diff);
                 }
 
-                new Uint8Array(wasm_memory.buffer).set(new_heap);
-                new_heap = null;
+                new Uint8Array(wasm_memory.buffer).set(decoded_heap);
                 loaded_heap = true;
 
                 for (let i = 0; i < function_calls_for_after_loading.length; i++) {
@@ -189,19 +218,21 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
                 // TODO: This could be an unloaded peer.
                 // That should be avoided somehow.
                 if (loaded_heap) {
+                    let encoded_data = gzip_encode(wasm_memory.buffer);
+                    console.log("HEAP SIZE: ", wasm_memory.buffer.byteLength);
+                    console.log("COMPRESSED HEAP SIZE: ", encoded_data.byteLength);
+
                     room.message_specific_peer(peer_id, JSON.stringify({
                         message_type: MessageTypeEnum.SENT_HEAP,
-                        heap_size: wasm_memory.buffer.byteLength,
+                        heap_size: encoded_data.byteLength,
                         time: current_time,
                         // TODO: This could be rather large as JSON, a more efficient encoding should be used.
                         past_actions: actions,
                     }));
 
-                    console.log("HEAP SIZE: ", wasm_memory.buffer.byteLength);
-
                     const HEAP_CHUNK_SIZE = 16000; // 16kb
-                    for (let i = 0; i < wasm_memory.buffer.byteLength; i += HEAP_CHUNK_SIZE) {
-                        room.message_specific_peer(peer_id, new Uint8Array(wasm_memory.buffer).slice(i, Math.min(i + HEAP_CHUNK_SIZE, wasm_memory.buffer.byteLength)));
+                    for (let i = 0; i < encoded_data.byteLength; i += HEAP_CHUNK_SIZE) {
+                        room.message_specific_peer(peer_id, new Uint8Array(encoded_data).slice(i, Math.min(i + HEAP_CHUNK_SIZE, encoded_data.byteLength)));
                     }
                 } else {
                     console.error("FATAL ERROR: PEER IS REQUESTING HEAP BUT I DO NOT HAVE IT YET");
@@ -304,8 +335,6 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
 
     async function rewind(timestamp) {
         while (actions[actions.length - 1] && actions[actions.length - 1].time > timestamp) {
-            console.log("REWINDING");
-
             let popped_action = actions.pop();
 
             switch (popped_action.type) {

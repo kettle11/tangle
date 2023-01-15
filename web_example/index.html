@@ -75,7 +75,7 @@
                 async (time) => {
 
                     // TODO: This ID might change if this is rolled back.
-                    player_id = await warpcore.call_wasm("add_player", [Math.random() * 255, Math.random() * 255, Math.random() * 255, Math.random() * 9], Date.now());
+                    player_id = 0;//await warpcore.call_wasm("add_player", [Math.random() * 255, Math.random() * 255, Math.random() * 255, Math.random() * 9], Date.now());
                     console.log("NEW PLAYER WITH ID: ", player_id);
 
                     current_animation_time = time;
