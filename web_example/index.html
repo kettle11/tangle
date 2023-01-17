@@ -104,8 +104,9 @@
                                 context.clearRect(0, 0, context.canvas.width, context.canvas.height);
                                 // This is OK to use Date.now because the script doesn't actually edit
                                 // anything (yet)
-                                await warpcore.progress_time(time_now);
-
+                                
+                                await warpcore.call_wasm_unnetworked_and_rollback("draw", [], time_now);
+                                //await warpcore.progress_time(time_now);
 
                                 // TODO: THIS IS SUPER WRONG AND WILL DESYNC IF PEERS HAVE FLAKEY CONNECTIONS
                                 warpcore.remove_history(time_now - 3000);

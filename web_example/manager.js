@@ -113,6 +113,24 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
         return hashed_result;
     }
 
+    async function reset_to(time) {
+        current_time = time;
+        await rewind(time);
+
+        // Remove function calls that happened after this time.
+        let i = function_calls.length;
+        for (; i > 0; i--) {
+            if (function_calls[i - 1].time < time) {
+                break;
+            }
+        }
+        function_calls.splice(i, function_calls.length - i);
+
+        if (function_calls.length > 0) {
+            current_time = function_calls[function_calls.length - 1].time;
+        }
+    }
+
 
     imports_in.wasm_guardian = {
         on_store: function (location, size) {
@@ -160,8 +178,6 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
     let peer_requesting_heap_from;
 
     let function_calls_for_after_loading = [];
-
-    let last_fixed_update = 0;
 
     room.setup(() => {
         console.log("CONNECTED TO ROOM. Next: Request the heap")
@@ -303,36 +319,41 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
                 // Rollback to this time.
                 // TODO: Check that we still can pause at this time.
                 paused = true;
-                current_time = m.time;
-                await rewind(m.time);
-
-                // Remove function calls that happened after this time.
-                let i = function_calls.length;
-                for (; i > 0; i--) {
-                    if (function_calls[i - 1].time < m.time) {
-                        break;
-                    }
-                }
-                function_calls.splice(i, function_calls.length - i);
+                reset_to(m.time);
             } else if (m.message_type == MessageTypeEnum.UNPAUSE) {
                 paused = false;
             }
         }
     });
 
+    let last_start = 0;
     async function recurring_calls_until(time) {
+        // console.log("CURRENT TIME: ", current_time);
+        // console.log("TIME: ", time);
+
         // TODO: This does not correctly handle events that occur directly on a time stamp.
-        // To fix: I think there's an issue here with timestamps occurring
-        let i = Math.ceil((current_time) / recurring_call_interval);
-        let n = Math.floor(((time - 1) / recurring_call_interval));
+        let i = Math.ceil((current_time + 1) / recurring_call_interval);
+        let n = Math.floor(time / recurring_call_interval);
 
         if ((n - i) > 2) {
             console.log("RECURRING CALLS TO PERFORM: ", n - i);
             console.log("TIME DELTA: ", time - current_time);
         }
+
+        // TODO: Rework recurring_calls to have a better time fix.
+        if (i == last_start) {
+            i += 1;
+        }
+
+        last_start = i;
+        //  console.log("I: ", i);
+        //  console.log("N: ", n);
         for (; i <= n; i++) {
-            current_time += recurring_call_interval;
-            await call_wasm_unnetworked("fixed_update", [], current_time, true);
+            current_time = i * recurring_call_interval;
+            if (function_calls.length > 0 && current_time - function_calls[function_calls.length - 1].time > 17) {
+                console.log("THIS SHOULD NOT HAPPEN");
+            }
+            await call_wasm_unnetworked("fixed_update", [current_time], current_time, true);
         }
     }
 
@@ -440,7 +461,7 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
     async function rewind(timestamp) {
         while (actions[actions.length - 1] && actions[actions.length - 1].time > timestamp) {
             let popped_action = actions.pop();
-            console.log("REWINDING: ", popped_action);
+            //console.log("REWINDING: ", popped_action);
 
             switch (popped_action.type) {
                 case "store":
@@ -526,6 +547,15 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
             }
 
             return result.result;
+        },
+        call_wasm_unnetworked_and_rollback: async function (function_name, args, time) {
+            // TODO: There's an unhandled edge case where where the time is equivalent to 
+            // an existing time. 
+            // This shouldn't rollback fixed updates that occur as a result of time progressing.
+            let result = await call_wasm_unnetworked(function_name, args, time);
+            reset_to(time - 1);
+
+            return result;
         },
         progress_time: async function (curent_time) {
             await progress_time(curent_time);

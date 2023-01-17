@@ -239,7 +239,7 @@ extern "C" fn fixed_update() {
 
         STATE.rapier.as_mut().unwrap().step();
 
-        draw();
+       // draw();
         /*
         // let offset = (STATE.rects.len() * 10) as u32;
 
