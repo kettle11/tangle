@@ -90,7 +90,7 @@ pub fn setup_panic_hook() {
 
 // Hashes data in DATA_FROM_HOST and returns it in DATA_FROM_HOST
 #[no_mangle]
-pub extern "C" fn xx3_128_bit_hash() {
+pub extern "C" fn xxh3_128_bit_hash() {
     DATA_FROM_HOST.with(|d| {
         let mut d = d.borrow_mut();
         let result = xxhash_rust::xxh3::xxh3_128(&d);

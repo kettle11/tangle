@@ -169,6 +169,7 @@ extern "C" fn pointer_down(player: usize, x: u32, y: u32, v: f32) {
 
 #[no_mangle]
 extern "C" fn add_ball(player: usize, x: u32, y: u32, v: f32, r: u8, g: u8, b: u8) {
+    initialize_rapier();
     unsafe {
         let rapier = STATE.rapier.as_mut().unwrap();
         let rigid_body = RigidBodyBuilder::dynamic()
@@ -225,7 +226,7 @@ fn initialize_rapier() {
 }
 
 #[no_mangle]
-extern "C" fn fixed_update(_time: u32) {
+extern "C" fn fixed_update() {
     unsafe {
         initialize_rapier();
         for player in STATE.players.iter_mut() {
@@ -238,6 +239,7 @@ extern "C" fn fixed_update(_time: u32) {
 
         STATE.rapier.as_mut().unwrap().step();
 
+        draw();
         /*
         // let offset = (STATE.rects.len() * 10) as u32;
 

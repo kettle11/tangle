@@ -69,8 +69,10 @@
 
             let player_id = 0;
             let current_animation_time = Date.now();
+
+            let fixed_update_rate = 1000 / 60;
             let warpcore = await getWarpCore(wasm_binary, imports,
-                1000 / 60,
+                fixed_update_rate,
                 // On Load
                 async (time) => {
 
@@ -81,18 +83,42 @@
                     current_animation_time = time;
 
                     async function animation() {
+                        let time_now = Date.now();
+                        let diff = time_now - current_animation_time;
+
+                        let stop = (diff / fixed_update_rate) > 4;
+                        if (stop) {
+                            console.log("RUNNING SLOW");
+                        }
+                        /*
+                        if ((diff / fixed_update_rate) > 4) {
+                            fixed_update_rate *= 2;
+                            console.log("SLOWING FIXED UPDATE TO: ", fixed_update_rate);
+                            console.log("TIME DIFF: ", diff);
+                            warpcore.set_recurring_call_interval(fixed_update_rate);
+                        }
+                        */
+
+                        if (!stop) {
+                            if (!warpcore.is_paused()) {
+                                context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+                                // This is OK to use Date.now because the script doesn't actually edit
+                                // anything (yet)
+                                await warpcore.progress_time(time_now);
 
 
-                        context.clearRect(0, 0, context.canvas.width, context.canvas.height);
-                        // This is OK to use Date.now because the script doesn't actually edit
-                        // anything (yet)
-                        await warpcore.call_wasm_unnetworked("draw", [], Date.now());
+                                // TODO: THIS IS SUPER WRONG AND WILL DESYNC IF PEERS HAVE FLAKEY CONNECTIONS
+                                warpcore.remove_history(time_now - 3000);
+                            }
 
-                        // TODO: THIS IS SUPER WRONG AND WILL DESYNC IF PEERS HAVE FLAKEY CONNECTIONS
-                        warpcore.remove_history(Date.now() - 2000);
-                        window.requestAnimationFrame(animation);
+                        }
+                        if (!stop) {
+                            window.requestAnimationFrame(animation);
+                        }
+
+                        current_animation_time = time_now;
                     }
-                    await animation();
+                    animation();
                 },
                 // On update
                 async () => {
@@ -100,47 +126,108 @@
                 });
 
 
-            document.onkeydown = async (event) => {
-
-                if (event.code == "ArrowLeft") {
-                    await warpcore.call_wasm("set_x_axis", [player_id, -1], Date.now());
-                }
-
-                if (event.code == "ArrowRight") {
-                    await warpcore.call_wasm("set_x_axis", [player_id, 1], Date.now());
-                }
-
-                if (event.code == "ArrowUp") {
-                    await warpcore.call_wasm("set_y_axis", [player_id, -1], Date.now());
-                }
-
-                if (event.code == "ArrowDown") {
-                    await warpcore.call_wasm("set_y_axis", [player_id, 1], Date.now());
-                }
-
-            };
+            /*
+        document.onkeydown = async (event) => {
+    
+            if (event.code == "ArrowLeft") {
+                await warpcore.call_wasm("set_x_axis", [player_id, -1], Date.now());
+            }
+    
+            if (event.code == "ArrowRight") {
+                await warpcore.call_wasm("set_x_axis", [player_id, 1], Date.now());
+            }
+    
+            if (event.code == "ArrowUp") {
+                await warpcore.call_wasm("set_y_axis", [player_id, -1], Date.now());
+            }
+    
+            if (event.code == "ArrowDown") {
+                await warpcore.call_wasm("set_y_axis", [player_id, 1], Date.now());
+            }
+    
+        };
+        */
 
             document.onkeyup = async (event) => {
 
-                if (event.code == "ArrowLeft") {
-                    await warpcore.call_wasm("set_x_axis", [player_id, 0], Date.now());
+                if (event.code == "Digit1") {
+                    await warpcore.call_wasm_unnetworked("fixed_update", [], 15);
+                    await warpcore.call_wasm_unnetworked("fixed_update", [], 25);
                 }
 
-                if (event.code == "ArrowRight") {
-                    await warpcore.call_wasm("set_x_axis", [player_id, 0], Date.now());
+                /*
+                if (event.code == "Digit2") {
+                    // Left off: Reconstruct above sequence
+                    await warpcore.log_hash();
+                    await warpcore.call_wasm("add_ball", [1, 10, 13, 0.5, 12, 12, 12], 10);
+                    console.log("AFTER add_ball 0 ");
+                    await warpcore.log_hash();
+    
+                    await warpcore.call_wasm_unnetworked("fixed_update", [], 15);
+                    console.log("AFTER FIXED UPDATE 0");
+                    await warpcore.log_hash();
+    
+                    await warpcore.call_wasm("add_ball", [1, 10, 13, 0.5, 12, 12, 12], 20);
+                    console.log("AFTER add_ball 1");
+                    await warpcore.log_hash();
+    
+                    await warpcore.call_wasm_unnetworked("fixed_update", [], 25);
+                    console.log("AFTER FIXED UPDATE 1");
+                    await warpcore.log_hash();
+                }
+    
+                if (event.code == "Digit3") {
+                    // Left off: Reconstruct above sequence
+    
+                    await warpcore.call_wasm_unnetworked("fixed_update", [], 15);
+                    await warpcore.call_wasm_unnetworked("fixed_update", [], 25);
+    
+                    console.log("INSERTING EVENTS");
+                    //  await warpcore.rewind(10);
+                    console.log("HERE0");
+                    await warpcore.log_hash();
+                    await warpcore.call_wasm_unnetworked("add_ball", [1, 10, 13, 0.5, 12, 12, 12], 10);
+                    console.log("HERE1");
+                    await warpcore.log_hash();
+    
+                    await warpcore.call_wasm_unnetworked("add_ball", [1, 10, 13, 0.5, 12, 12, 12], 20);
+                    console.log("HERE2");
+                    await warpcore.log_hash();
+                }
+                */
+
+
+
+                /*
+                if (event.code == "KeyH") {
+                    await warpcore.log_hash();
                 }
 
-                if (event.code == "ArrowUp") {
-                    await warpcore.call_wasm("set_y_axis", [player_id, 0], Date.now());
+                if (event.code == "KeyD") {
+                    await warpcore.call_wasm("add_ball", [player_id, Math.random() * canvas.width, Math.random() * canvas.height, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255], window.last_wasm_sent_time - 10);
                 }
 
-                if (event.code == "ArrowDown") {
-                    await warpcore.call_wasm("set_y_axis", [player_id, 0], Date.now());
+                if (event.code == "KeyF") {
+                    await warpcore.call_wasm_unnetworked("fixed_update", [], window.last_wasm_sent_time - 10);
                 }
 
+                if (event.code == "KeyA") {
+                    await warpcore.call_wasm("add_ball", [player_id, Math.random() * canvas.width, Math.random() * canvas.height, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255], Date.now());
+                    context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+                    await warpcore.call_wasm("draw", [], Date.now());
+                }
+                */
+
+                if (event.code == "KeyP") {
+                    warpcore.toggle_pause(Date.now());
+                }
+                if (event.code == "KeyF") {
+                    warpcore.log_function_calls();
+                }
             };
 
             canvas.onpointerdown = async (event) => {
+
                 await warpcore.call_wasm("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255], Date.now());
             };
         };
