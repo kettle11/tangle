@@ -1,0 +1,19 @@
+{
+  "name": "warpcore_ts",
+  "version": "1.0.0",
+  "description": "To install dependencies:",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "esbuild --mangle-props=^_ src/warp_core.ts --bundle --outfile=out.js --minify --minify-identifiers"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "typescript": "^4.9.4"
+  },
+  "dependencies": {
+    "esbuild": "0.17.3"
+  }
+}

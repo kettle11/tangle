@@ -65,7 +65,7 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
 
     let paused = false;
 
-    let desync_debug_mode = true;
+    let desync_debug_mode = false;
 
     // Prepare the wasm module.
     let length = wasm_binary.byteLength;
@@ -118,13 +118,13 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
         await rewind(time);
 
         // Remove function calls that happened after this time.
-        let i = function_calls.length;
+        let i = function_calls.length - 1;
         for (; i > 0; i--) {
-            if (function_calls[i - 1].time < time) {
+            if (function_calls[i].time <= time) {
                 break;
             }
         }
-        function_calls.splice(i, function_calls.length - i);
+        function_calls.splice(i);
 
         if (function_calls.length > 0) {
             current_time = function_calls[function_calls.length - 1].time;
@@ -340,9 +340,9 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
             console.log("TIME DELTA: ", time - current_time);
         }
 
-        // TODO: Rework recurring_calls to have a better time fix.
-        if (i == last_start) {
-            i += 1;
+        if (function_calls.length > 0 && (i * recurring_call_interval) - function_calls[function_calls.length - 1].time > (recurring_call_interval * 1.0001)) {
+            //console.log("THIS SHOULD NOT HAPPEN0");
+            i -= 1;
         }
 
         last_start = i;
@@ -350,8 +350,8 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
         //  console.log("N: ", n);
         for (; i <= n; i++) {
             current_time = i * recurring_call_interval;
-            if (function_calls.length > 0 && current_time - function_calls[function_calls.length - 1].time > 17) {
-                console.log("THIS SHOULD NOT HAPPEN");
+            if (function_calls.length > 0 && current_time - function_calls[function_calls.length - 1].time > (recurring_call_interval * 1.0001)) {
+                console.log("THIS SHOULD NOT HAPPEN1");
             }
             await call_wasm_unnetworked("fixed_update", [current_time], current_time, true);
         }
@@ -384,17 +384,18 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
             return { result: null, something_changed: false };
         }
 
-        if (function_calls.length > 0 && time < function_calls[function_calls.length - 1].time) {
+        let requires_rollback = function_calls.length > 0 && time < function_calls[function_calls.length - 1].time;
+        if (requires_rollback) {
             console.log("FUNCTION TIME THAT IS LESS THAN PREVIOUS LAST ONE");
         }
 
-        if (!skip_recurring && recurring_call_interval != 0) {
+        if (!requires_rollback && !skip_recurring && recurring_call_interval != 0) {
             await recurring_calls_until(time);
         }
         current_time = time;
     }
 
-    async function call_wasm_unnetworked(function_name, args, time, skip_recurring = false) {
+    async function call_wasm_unnetworked(function_name, args, time, skip_recurring = false, skip_rollback = false) {
         if (!skip_recurring) {
             await progress_time(time, skip_recurring);
         }
@@ -408,9 +409,11 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
             }
         }
 
-        // Undo everything that ocurred after this event.
-        // TODO: Detect if this event has occurred too far in the past and should be ignored.
-        await rewind(time);
+        if (!skip_rollback) {
+            // Undo everything that ocurred after this event.
+            // TODO: Detect if this event has occurred too far in the past and should be ignored.
+            await rewind(time);
+        }
 
         // console.log("HASH HERE 9: ", xxh3_128_bit_hash(wasm_memory.buffer));
 
@@ -440,17 +443,15 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
             i += 1;
         }
 
-        // Replay all function calls that occur after this event.
-        for (let j = i; j < function_calls.length; j++) {
-            let call = function_calls[j];
-            console.log("REPLAYING FUNCTION CALL: %s %s", call.function_name, call.time);
-            current_time = call.time;
-            wasm_instance.exports[call.function_name](...call.args)
-        }
+        if (!skip_rollback) {
 
-        // Only issue on `up_update` event if this actually changed something.
-        if (something_changed) {
-            on_update();
+            // Replay all function calls that occur after this event.
+            for (let j = i; j < function_calls.length; j++) {
+                let call = function_calls[j];
+                console.log("REPLAYING FUNCTION CALL: %s %s", call.function_name, call.time);
+                current_time = call.time;
+                wasm_instance.exports[call.function_name](...call.args)
+            }
         }
 
         //console.log("HEAP HASH AFTER ACTION: ", xxh3_128_bit_hash(wasm_memory.buffer));
@@ -458,54 +459,56 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
         return { result: result, something_changed: something_changed };
     }
 
+    async function rewind_action(action) {
+        switch (action.type) {
+            case "store":
+                // console.log("REVERSING STORE");
+
+                let destination = new Uint8Array(wasm_memory.buffer, action.location, action.old_value.byteLength);
+                destination.set(action.old_value);
+
+                /*
+                let hash = xxh3_128_bit_hash(wasm_memory.buffer);
+
+                if (!arrayEquals(action.hash, hash)) {
+                    console.log("NOT MATCHING ROLLBACK");
+                } else {
+                    console.log("MATCHING ROLLBACK");
+                }
+                */
+                break;
+            case "grow":
+                // console.log("REVERSING GROW");
+                // The only way to "shrink" a Wasm instance is to construct an entirely new 
+                // one with a new memory.
+                // Hopefully Wasm gets a better way to shrink modules in the future.
+
+                let new_memory = new WebAssembly.Memory({
+                    initial: action.old_pages
+                });
+
+                let dest = new Uint8Array(new_memory.buffer);
+                dest.set(wasm_memory.buffer.slice(new_memory.buffer.byteLength));
+                imports_in.mem = new_memory;
+
+                await WebAssembly.instantiate(wasm_module, imports_in).then(r => {
+                    wasm_memory = r.exports.memory;
+                    wasm_instance = r;
+                });
+
+                break;
+            case "global_set":
+                // console.log("REVERSING GLOBAL SET");
+
+                wasm_instance.exports[action.global_id].value = action.old_value;
+                break;
+        }
+    }
+
     async function rewind(timestamp) {
-        while (actions[actions.length - 1] && actions[actions.length - 1].time > timestamp) {
+        while (actions[actions.length - 1] && actions[actions.length - 1].time >= timestamp) {
             let popped_action = actions.pop();
-            //console.log("REWINDING: ", popped_action);
-
-            switch (popped_action.type) {
-                case "store":
-                    // console.log("REVERSING STORE");
-
-                    let destination = new Uint8Array(wasm_memory.buffer, popped_action.location, popped_action.old_value.byteLength);
-                    destination.set(popped_action.old_value);
-
-                    /*
-                    let hash = xxh3_128_bit_hash(wasm_memory.buffer);
-    
-                    if (!arrayEquals(popped_action.hash, hash)) {
-                        console.log("NOT MATCHING ROLLBACK");
-                    } else {
-                        console.log("MATCHING ROLLBACK");
-                    }
-                    */
-                    break;
-                case "grow":
-                    // console.log("REVERSING GROW");
-                    // The only way to "shrink" a Wasm instance is to construct an entirely new 
-                    // one with a new memory.
-                    // Hopefully Wasm gets a better way to shrink modules in the future.
-
-                    let new_memory = new WebAssembly.Memory({
-                        initial: popped_action.old_pages
-                    });
-
-                    let dest = new Uint8Array(new_memory.buffer);
-                    dest.set(wasm_memory.buffer.slice(new_memory.buffer.byteLength));
-                    imports_in.mem = new_memory;
-
-                    await WebAssembly.instantiate(wasm_module, imports_in).then(r => {
-                        wasm_memory = r.exports.memory;
-                        wasm_instance = r;
-                    });
-
-                    break;
-                case "global_set":
-                    // console.log("REVERSING GLOBAL SET");
-
-                    wasm_instance.exports[popped_action.global_id].value = popped_action.old_value;
-                    break;
-            }
+            rewind_action(popped_action)
         }
     }
 
@@ -552,8 +555,18 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
             // TODO: There's an unhandled edge case where where the time is equivalent to 
             // an existing time. 
             // This shouldn't rollback fixed updates that occur as a result of time progressing.
-            let result = await call_wasm_unnetworked(function_name, args, time);
-            reset_to(time - 1);
+
+            let actions_length = actions.length;
+            let functions_length = function_calls.length;
+
+            let result = await call_wasm_unnetworked(function_name, args, time, true, true);
+
+            let diff = actions.length - actions_length;
+            for (let i = 0; i < diff; i++) {
+                let popped_action = actions.pop();
+                rewind_action(popped_action);
+            }
+            function_calls.splice(functions_length);
 
             return result;
         },
@@ -595,7 +608,8 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
             }
 
             // Remove all the elements that were before this.
-            actions.splice(step, actions.length);
+            actions.splice(0, step);
+            //console.log("HISORY SIZE: ", actions.length);
             // console.log("REMOVING HISTORY. NEW LENGTH: ", actions.length);
 
             step = 0;
@@ -605,7 +619,7 @@ export async function getWarpCore(wasm_binary, imports_in, recurring_call_interv
                 }
             }
 
-            //function_calls.splice(step, function_calls.length);
+            function_calls.splice(0, step);
         }
     };
 }

@@ -104,12 +104,12 @@
                                 context.clearRect(0, 0, context.canvas.width, context.canvas.height);
                                 // This is OK to use Date.now because the script doesn't actually edit
                                 // anything (yet)
-                                
+
+                                await warpcore.progress_time(time_now);
                                 await warpcore.call_wasm_unnetworked_and_rollback("draw", [], time_now);
-                                //await warpcore.progress_time(time_now);
 
                                 // TODO: THIS IS SUPER WRONG AND WILL DESYNC IF PEERS HAVE FLAKEY CONNECTIONS
-                                warpcore.remove_history(time_now - 3000);
+                                warpcore.remove_history(time_now - 200);
                             }
 
                         }
@@ -211,13 +211,13 @@
                 if (event.code == "KeyF") {
                     await warpcore.call_wasm_unnetworked("fixed_update", [], window.last_wasm_sent_time - 10);
                 }
+                */
 
                 if (event.code == "KeyA") {
                     await warpcore.call_wasm("add_ball", [player_id, Math.random() * canvas.width, Math.random() * canvas.height, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255], Date.now());
                     context.clearRect(0, 0, context.canvas.width, context.canvas.height);
-                    await warpcore.call_wasm("draw", [], Date.now());
                 }
-                */
+
 
                 if (event.code == "KeyP") {
                     warpcore.toggle_pause(Date.now());
