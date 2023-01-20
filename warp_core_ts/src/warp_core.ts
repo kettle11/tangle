@@ -203,6 +203,7 @@ export class WarpCore {
 
     /// Resync with the room, immediately catching up.
     resync() {
+        console.log("REQUESTING HEAP!");
         this.request_heap();
     }
 

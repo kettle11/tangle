@@ -72,23 +72,22 @@
             let current_animation_time = Date.now();
             let fixed_update_rate = 1000 / 60;
             let start_time = 0;
+            let paused = false;
+
             async function animation() {
-                let time_now = Date.now();
-                let diff = time_now - current_animation_time;
 
-                context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+                if (!paused) {
+                    let time_now = Date.now();
+                    let diff = time_now - current_animation_time;
 
-                // TODO: This will cause issues and instead some sort of 'catchup' or just 
-                // a reconnect should be initiated.
-                if (diff > fixed_update_rate * 3) {
-                    diff = 0;
+                    context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+
+                    await warpcore.progress_time(diff);
+                    await warpcore.call_and_revert("draw", []);
+
+                    current_animation_time = time_now;
                 }
-                await warpcore.progress_time(diff);
-                await warpcore.call_and_revert("draw", []);
-
                 window.requestAnimationFrame(animation);
-
-                current_animation_time = time_now;
             }
 
             let warpcore = await WarpCore.setup(wasm_binary, imports, fixed_update_rate, (state) => {
@@ -104,28 +103,17 @@
             });
 
             document.onkeyup = async (event) => {
-                if (event.code == "Digit1") {
-                    await warpcore.call_wasm_unnetworked("fixed_update", [], 15);
-                    await warpcore.call_wasm_unnetworked("fixed_update", [], 25);
-                }
-
-                if (event.code == "KeyA") {
-                    await warpcore.call_wasm("add_ball", [player_id, Math.random() * canvas.width, Math.random() * canvas.height, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255], Date.now());
-                    context.clearRect(0, 0, context.canvas.width, context.canvas.height);
-                }
-
 
                 if (event.code == "KeyP") {
-                    warpcore.toggle_pause(Date.now());
-                }
-                if (event.code == "KeyF") {
-                    warpcore.log_function_calls();
+                    paused = !paused;
                 }
 
             };
 
             canvas.onpointerdown = async (event) => {
-                await warpcore.call("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255]);
+                if (!paused) {
+                    await warpcore.call("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255]);
+                }
             };
         };
         run();
