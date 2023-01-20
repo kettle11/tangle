@@ -15,6 +15,12 @@ enum MessageType {
     WasmCall,
     RequestHeap,
     SentHeap,
+    TimeProgressed,
+}
+
+type PeerData = {
+    last_sent_message: number,
+    last_received_message: number,
 }
 
 export class WarpCore {
@@ -24,6 +30,7 @@ export class WarpCore {
     private _bytes_remaining_for_heap_load: number = 0;
     private _loading_heap_message?: LoadingHeapMessage = undefined;
     private _buffered_messages: Array<any> = [];
+    private _peer_data: Map<string, PeerData> = new Map();
 
     private static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void): Promise<WarpCore> {
         let warp_core = new WarpCore();
@@ -33,6 +40,15 @@ export class WarpCore {
 
     private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void) {
         let room_configuration = {
+            on_peer_joined: (peer_id: string) => {
+                this._peer_data.set(peer_id, {
+                    last_sent_message: 0,
+                    last_received_message: 0,
+                });
+            },
+            on_peer_left: (peer_id: string) => {
+                this._peer_data.delete(peer_id);
+            },
             on_state_change: (state: RoomState) => {
                 // TODO: Change this callback to have room passed in.
 
@@ -59,10 +75,21 @@ export class WarpCore {
 
                 if (m) {
                     switch (m.message_type) {
+                        case (MessageType.TimeProgressed): {
+                            this._peer_data.get(peer_id)!.last_received_message = m.time;
+                            break;
+                        }
                         case (MessageType.WasmCall): {
+                            this._peer_data.get(peer_id)!.last_received_message = m.time_stamp.time;
+
                             if (this._bytes_remaining_for_heap_load > 0) {
                                 this._buffered_messages.push(message);
                             } else {
+                                console.log("REMOTE CALL: ", m.function_name);
+
+                                if (m.time_stamp.time < this._warp_core.recurring_call_time) {
+                                    console.log("THIS WILL REQUIRE A ROLLBACK");
+                                }
                                 // Note: If this is negative the implementation of progress_time simply does nothing.
                                 await this.progress_time(m.time_stamp.time - this._warp_core.current_time);
 
@@ -98,6 +125,8 @@ export class WarpCore {
                             break;
                         }
                         case (MessageType.SentHeap): {
+                            this._peer_data.get(peer_id)!.last_received_message = m.current_time;
+
                             // This is the start of a heap load.
                             this._loading_heap = new Uint8Array(m.heap_size);
                             this._bytes_remaining_for_heap_load = m.heap_size;
@@ -153,6 +182,10 @@ export class WarpCore {
             }));
 
             console.log("HASH HERE: ", this._warp_core.hash());
+
+            for (let [_, value] of this._peer_data) {
+                value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
+            }
         }
     }
 
@@ -164,14 +197,38 @@ export class WarpCore {
     }
 
     async progress_time(time_progressed: number) {
-        // TODO: Chcek if too much time is being progressed and if so consider a catchup strategy
+        // TODO: Check if too much time is being progressed and if so consider a catchup strategy
         // or consider just disconnecting and reconnecting.
-        this._warp_core.progress_time(time_progressed);
+        await this._warp_core.progress_time(time_progressed);
+
+
+        // Keep track of when a message was received from each peer
+        // and use that to determine what history is safe to throw away.
+        let earliest_safe_memory = this._warp_core.recurring_call_time;
+        for (let [_, value] of this._peer_data) {
+            earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
+
+            // If we haven't message our peers in a while send them a message
+            // This lets them know nothing has happened and they can clear memory.
+            // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
+            // it'd be better to figure out if those could be used instead.
+            const KEEP_ALIVE_THRESHOLD = 200;
+            if ((this._warp_core.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
+                this.room.broadcast(JSON.stringify({
+                    message_type: MessageType.TimeProgressed,
+                    time: this._warp_core.current_time
+                }));
+            }
+        }
+        this.remove_history_before(earliest_safe_memory);
     }
 
-    // TODO: Don't expose this and instead remove history when there's no chance of a rollback.
-    remove_history_before(time_exclusive: number) {
+    private remove_history_before(time_exclusive: number) {
         this._warp_core.remove_history_before(time_exclusive);
+    }
+
+    rewind_time(length: number) {
+        this._warp_core.revert_to_length(length);
     }
 
     get_memory(): WebAssembly.Memory {

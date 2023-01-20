@@ -10,11 +10,13 @@ type Store = {
     action_type: WasmActionType.Store,
     location: number,
     old_value: Uint8Array
+    // hash_before: Uint8Array
 };
 
 type Grow = {
     action_type: WasmActionType.Grow,
     old_page_count: number,
+    // hash_before: Uint8Array
 };
 
 type GlobalSet = {
@@ -32,9 +34,19 @@ type TimeStamp = {
 };
 
 function time_stamp_less_than(a: TimeStamp, b: TimeStamp): boolean {
-    return a.time < b.time
-        || a.player_id < b.player_id
-        || a.offset < b.offset;
+    if (a.time != b.time) {
+        return a.time < b.time;
+    }
+
+    if (a.player_id != b.player_id) {
+        return a.player_id < b.player_id;
+    }
+
+    if (a.offset != b.offset) {
+        return a.offset < b.offset;
+    }
+
+    return false;
 }
 
 export type FunctionCall = {
@@ -42,6 +54,7 @@ export type FunctionCall = {
     args: Array<number>,
     actions_length_before: number,
     time_stamp: TimeStamp
+    hash_before: Uint8Array,
 };
 
 export class OfflineWarpCore {
@@ -90,16 +103,24 @@ export class OfflineWarpCore {
 
         warpcore._imports.wasm_guardian = {
             on_store: (location: number, size: number) => {
-                //  console.log("on_store called: ", location, size);
-                let memory = warpcore.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
-                let old_value = new Uint8Array(new Uint8Array(memory.buffer, location, size));
+                // console.log("HASH BEFORE STORE: ", warpcore.hash());
 
-                warpcore._actions.push({ action_type: WasmActionType.Store, location: location, old_value: old_value });
+                //  console.log("on_store called: ", location, size);
+                if ((location + size) > (warpcore.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer.byteLength) {
+                    console.log("OUT OF BOUNDS MEMORY SIZE IN PAGES: ", (location + size) / WASM_PAGE_SIZE);
+                    console.error("MEMORY OUT OF BOUNDS!: ", location + size);
+                } else {
+                    let memory = warpcore.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
+                    let old_value = new Uint8Array(new Uint8Array(memory.buffer, location, size));
+                    warpcore._actions.push({ action_type: WasmActionType.Store, location: location, old_value: old_value, /* hash_before: warpcore.hash() */ });
+                }
             },
             on_grow: (pages: number) => {
-                //  console.log("on_grow called: ", pages);
-                let memory = warpcore.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
-                warpcore._actions.push({ action_type: WasmActionType.Grow, old_page_count: memory.buffer.byteLength / WASM_PAGE_SIZE });
+                console.log("on_grow called: ", pages);
+                let memory = warpcore.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
+                console.log("NEW MEMORY SIZE IN PAGES: ", (memory.buffer.byteLength / WASM_PAGE_SIZE) + 1);
+
+                warpcore._actions.push({ action_type: WasmActionType.Grow, old_page_count: memory.buffer.byteLength / WASM_PAGE_SIZE, /* hash_before: warpcore.hash()*/ });
             },
             on_global_set: (id: number) => {
                 //  console.log("on_global_set called: ", id);
@@ -108,15 +129,20 @@ export class OfflineWarpCore {
             },
         };
         let wasm_instance = await WebAssembly.instantiate(processed_binary, warpcore._imports);
+
         warpcore.wasm_instance = wasm_instance;
+        console.log("INITIAL HASH: ", warpcore.hash());
 
         return warpcore;
     }
 
-    /// Restarts the WarpCore with a new memory.
-    async reset_with_wasm_memory(new_memory_data: Uint8Array, current_time: number, recurring_call_time: number) {
+    async assign_memory(new_memory_data: Uint8Array) {
         let mem = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
         let page_diff = (new_memory_data.byteLength - mem.buffer.byteLength) / WASM_PAGE_SIZE;
+
+        // The only way to "shrink" a Wasm instance is to construct an entirely new 
+        // one with a new memory.
+        // Hopefully Wasm gets a better way to shrink modules in the future.
 
         if (page_diff < 0) {
             this.wasm_instance!.instance = await WebAssembly.instantiate(this.wasm_instance!.module, this._imports);
@@ -126,8 +152,12 @@ export class OfflineWarpCore {
         if (page_diff > 0) {
             old_memory.grow(page_diff);
         }
-
         new Uint8Array(old_memory.buffer).set(new_memory_data);
+    }
+    /// Restarts the WarpCore with a new memory.
+    async reset_with_wasm_memory(new_memory_data: Uint8Array, current_time: number, recurring_call_time: number) {
+        this.assign_memory(new_memory_data);
+
         this._actions = [];
         this.function_calls = [];
 
@@ -137,48 +167,78 @@ export class OfflineWarpCore {
     }
 
     remove_history_before(time_exclusive: number) {
-        // TODO / LEFT OFF: This isn't correctly exclusive.
+        // TODO: This function is quite broken
+        // TODO: Handle the case where the most recent function should be removed as well.
+
+
         let step = 0;
         for (; step < this.function_calls.length; step++) {
             if (this.function_calls[step].time_stamp.time >= time_exclusive) {
                 break;
             }
         }
-        let first_function = this.function_calls.splice(0, step)[0];
 
-        if (first_function) {
-            this._actions.splice(first_function.actions_length_before);
+        // Remove all actions that occurred before this.
+        let last_function = this.function_calls[step];
+        let to_remove = 0;
+        if (last_function) {
+            to_remove = this._actions.length - last_function.actions_length_before;
+            this._actions.splice(0, to_remove);
         }
+
+        this.function_calls.splice(0, step);
+
+        // TODO: This loop could be avoided by tracking a 'current' action index
+        // and then calculating the offset from that.
+        // But it'd require care to be correct when integers wrap.
+        for (let i = 0; i < this.function_calls.length; i++) {
+            this.function_calls[i].actions_length_before -= to_remove;
+        }
+
+        // console.log("ACTIONS LEN: ", this._actions.length);
+        // console.log("FUNCTIONS LEN: ", this.function_calls.length);
     }
 
-    private async _rollback_to_length(actions_length: number) {
+    async revert_to_length(actions_length: number) {
+        await this._revert_to_length(actions_length);
+    }
+
+    private async _revert_to_length(actions_length: number) {
+        if (actions_length != this._actions.length) {
+            console.log("ROLLING BACK: ", this._actions.length - actions_length);
+        }
         let memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
 
         let to_rollback = this._actions.splice(actions_length, this._actions.length - actions_length);
-        for (let i = 0; i < to_rollback.length; i++) {
+        for (let i = to_rollback.length - 1; i >= 0; i--) {
             let action = to_rollback[i];
             switch (action.action_type) {
                 case WasmActionType.Store: {
                     let destination = new Uint8Array(memory.buffer, action.location, action.old_value.byteLength);
                     destination.set(action.old_value);
+
+                    /*
+                    let hash = this.hash();
+                    console.log("HASH AFTER ROLLBACK: ", this.hash());
+
+                    if (!arrayEquals(hash, action.hash_before)) {
+                        console.error("ACTION HASH DOES NOT MATCH");
+                    }
+                    */
                     break;
                 }
                 case WasmActionType.Grow: {
-                    // The only way to "shrink" a Wasm instance is to construct an entirely new 
-                    // one with a new memory.
-                    // Hopefully Wasm gets a better way to shrink modules in the future.
+                    console.log("ROLLING BACK GROW!");
+                    // TODO: Need to copy globals / tables here as well because a new instance is being declared
+                    await this.assign_memory(new Uint8Array(memory.buffer, 0, action.old_page_count * WASM_PAGE_SIZE));
+                    memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
 
-                    let new_memory = new WebAssembly.Memory({
-                        initial: action.old_page_count
-                    });
-
-                    let dest = new Uint8Array(new_memory.buffer);
-                    dest.set(new Uint8Array(memory.buffer, 0, new_memory.buffer.byteLength));
-
-                    // TODO: Is `env` correct here?
-                    this._imports.env.mem = new_memory;
-
-                    this.wasm_instance!.instance = await WebAssembly.instantiate(this.wasm_instance!.module!, this._imports);
+                    /*
+                    let hash = this.hash();
+                    if (!arrayEquals(hash, action.hash_before)) {
+                        console.error("GROW ACTION HASH DOES NOT MATCH");
+                    }
+                    */
                     break;
                 }
                 case WasmActionType.GlobalSet: {
@@ -231,11 +291,17 @@ export class OfflineWarpCore {
             if (time_stamp_less_than(function_call.time_stamp, time_stamp)) {
 
                 if (this.function_calls[i]) {
-                    await this._rollback_to_length(this.function_calls[i].actions_length_before);
+                    await this._revert_to_length(this.function_calls[i].actions_length_before);
+                    let hash_after_revert = this.hash();
+
+                    if (!arrayEquals(hash_after_revert, this.function_calls[i].hash_before)) {
+                        console.error("HASHES DO NOT MATCH");
+                    }
                 }
                 break;
             }
         }
+        let hash_before = this.hash();
 
         let actions_length_before = this._actions.length;
         (this.wasm_instance?.instance.exports[function_name] as CallableFunction)(...args);
@@ -244,7 +310,8 @@ export class OfflineWarpCore {
             name: function_name,
             args: args,
             actions_length_before: actions_length_before,
-            time_stamp: time_stamp
+            time_stamp: time_stamp,
+            hash_before: hash_before
         });
 
         // Replay any function calls that occur after this function
@@ -272,6 +339,9 @@ export class OfflineWarpCore {
         // TODO: Check for a PlayerId to insert into args
         // TODO: Use a real player ID.
         await this._call_inner(function_name, time_stamp, args);
+
+        console.log("HASH AFTER CALL: ", this.hash());
+        console.log("FUNCTION CALLS: ", this.function_calls);
         this.time_offset += 1;
     }
 
@@ -280,10 +350,8 @@ export class OfflineWarpCore {
     async call_and_revert(function_name: string, args: [number]) {
         let actions_length = this._actions.length;
         (this.wasm_instance?.instance.exports[function_name] as CallableFunction)(...args);
-        this._rollback_to_length(actions_length);
+        await this._revert_to_length(actions_length);
     }
-
-
 
     // TODO: These are just helpers and aren't that related to the rest of the code in this:
     gzip_encode(data_to_compress: Uint8Array) {
@@ -349,4 +417,18 @@ async function process_binary(wasm_binary: Uint8Array) {
     let output_len = (OfflineWarpCore._warpcore_wasm?.instance.exports.get_output_len as CallableFunction)();
     const output_wasm = new Uint8Array(memory.buffer, output_ptr, output_len);
     return output_wasm;
+}
+
+
+function arrayEquals(a: Uint8Array, b: Uint8Array) {
+    if (a.length != b.length) {
+        return false;
+    }
+
+    for (let i = 0; i < a.length; i++) {
+        if (a[i] != b[i]) {
+            return false;
+        }
+    }
+    return true;
 }

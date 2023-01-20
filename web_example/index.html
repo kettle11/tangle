@@ -86,9 +86,6 @@
                 await warpcore.progress_time(diff);
                 await warpcore.call_and_revert("draw", []);
 
-                // TODO: THIS IS SUPER WRONG AND WILL DESYNC IF PEERS HAVE FLAKEY CONNECTIONS
-                warpcore.remove_history_before((time_now - start_time) - 100);
-
                 window.requestAnimationFrame(animation);
 
                 current_animation_time = time_now;
@@ -97,6 +94,11 @@
             let warpcore = await WarpCore.setup(wasm_binary, imports, fixed_update_rate, (state) => {
                 if (state === RoomState.Connected) {
                     start_time = Date.now();
+
+                    //  (async () => {
+                    //      await warpcore.progress_time(100);
+                    //      await warpcore.rewind_time(0);
+                    //  })();
                     animation();
                 }
             });
@@ -120,10 +122,6 @@
                     warpcore.log_function_calls();
                 }
 
-                if (event.code == "KeySpace") {
-
-                    animation();
-                }
             };
 
             canvas.onpointerdown = async (event) => {

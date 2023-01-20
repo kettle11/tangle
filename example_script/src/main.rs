@@ -1,7 +1,7 @@
 fn main() {}
 
 use kmath::*;
-use rapier2d::{na::UnitComplex, prelude::*};
+use rapier2d::prelude::*;
 
 #[derive(Copy, Clone)]
 struct Color {
@@ -142,7 +142,7 @@ const WORLD_SCALE_FACTOR: f32 = 0.05;
 const BALL_RADIUS: f32 = 3.0;
 
 #[no_mangle]
-extern "C" fn pointer_down(player: usize, x: u32, y: u32, v: f32) {
+extern "C" fn pointer_down(_player: usize, x: u32, y: u32, v: f32) {
     unsafe {
         /*
         STATE
@@ -168,7 +168,7 @@ extern "C" fn pointer_down(player: usize, x: u32, y: u32, v: f32) {
 }
 
 #[no_mangle]
-extern "C" fn add_ball(player: usize, x: u32, y: u32, v: f32, r: u8, g: u8, b: u8) {
+extern "C" fn add_ball(_player: usize, x: u32, y: u32, v: f32, r: u8, g: u8, b: u8) {
     unsafe {
         GLOBAL_DATA += 1;
         log(&format!("COUNT: {:?}", GLOBAL_DATA));
@@ -181,7 +181,7 @@ extern "C" fn add_ball(player: usize, x: u32, y: u32, v: f32, r: u8, g: u8, b: u
             .translation(vector![x as _, y as _] * WORLD_SCALE_FACTOR)
             .build();
 
-        let mut packed_data: u128 = ((r as u128) << 8 * 2) | ((g as u128) << 8) | b as u128;
+        let packed_data: u128 = ((r as u128) << 8 * 2) | ((g as u128) << 8) | b as u128;
 
         let collider = ColliderBuilder::ball(v * BALL_RADIUS)
             .restitution(0.7)
@@ -202,7 +202,7 @@ fn initialize_rapier() {
             let mut rapier = RapierIntegration::new();
 
             let (r, g, b) = (255, 0, 0);
-            let mut packed_data: u128 = ((r as u128) << 8 * 2) | ((g as u128) << 8) | b;
+            let packed_data: u128 = ((r as u128) << 8 * 2) | ((g as u128) << 8) | b;
 
             // Create the ground
             {

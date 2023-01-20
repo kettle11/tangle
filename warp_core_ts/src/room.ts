@@ -2,7 +2,8 @@ export interface RoomConfiguration {
     name?: string
     server_url?: string
     on_state_change?: (room_state: RoomState) => void;
-    on_peer_disconnected?: (peer_id: string) => void;
+    on_peer_joined?: (peer_id: string) => void;
+    on_peer_left?: (peer_id: string) => void;
     on_message?: (peer_id: string, message: any) => void;
 }
 
@@ -17,7 +18,7 @@ class Peer {
 }
 
 export class Room {
-    private __peers_to_join: Set<string> = new Set();
+    private _peers_to_join: Set<string> = new Set();
     private _current_state: RoomState = RoomState.Disconnected;
     private _peers: Map<string, Peer> = new Map();
     private _configuration: RoomConfiguration = {};
@@ -83,13 +84,13 @@ export class Room {
                 console.log("[room] Entering room: ", message.room_name);
 
                 this._current_state = RoomState.Joining;
-                this.__peers_to_join = new Set(message.peers);
+                this._peers_to_join = new Set(message.peers);
 
                 this._configuration.on_state_change?.(this._current_state);
 
                 // If we've already connected to a peer then remove it from the _peers to join.
                 for (const [key, value] of this._peers) {
-                    this.__peers_to_join.delete(key);
+                    this._peers_to_join.delete(key);
                 }
                 this.check_if_joined();
 
@@ -119,7 +120,7 @@ export class Room {
             } else if (message.disconnected_peer_id) {
                 console.log("[room] Peer left: ", message.disconnected_peer_id);
                 this.remove_peer(message.disconnected_peer_id);
-                this.__peers_to_join.delete(message.disconnected_peer_id);
+                this._peers_to_join.delete(message.disconnected_peer_id);
                 this.check_if_joined();
             }
         };
@@ -129,7 +130,7 @@ export class Room {
 
             // TODO: On disconnected callback
             this._current_state = RoomState.Disconnected;
-            this.__peers_to_join.clear();
+            this._peers_to_join.clear();
             this._peers.clear();
 
             if (event.wasClean) {
@@ -147,7 +148,7 @@ export class Room {
     }
 
     private check_if_joined() {
-        if (this._current_state == RoomState.Joining && this.__peers_to_join.size == 0) {
+        if (this._current_state == RoomState.Joining && this._peers_to_join.size == 0) {
             this._current_state = RoomState.Connected;
             this._configuration.on_state_change?.(this._current_state);
         }
@@ -202,10 +203,9 @@ export class Room {
                         console.log("[room] Round trip seconds to _peers: %s : %s", peer_id, report.currentRoundTripTime);
                     }
                 });
-                this.__peers_to_join.delete(peer_id);
+                this._peers_to_join.delete(peer_id);
 
-                // TODO: Call peer joined callback.
-                // on_peer_joined(peer_id, welcoming);
+                this._configuration.on_peer_joined?.(peer_id);
                 this.check_if_joined();
             });
         }
@@ -225,7 +225,7 @@ export class Room {
         if (peer) {
             peer.connection.close();
             this._peers.delete(peer_id);
-            this._configuration.on_peer_disconnected?.(peer_id);
+            this._configuration.on_peer_left?.(peer_id);
         }
     }
 }
