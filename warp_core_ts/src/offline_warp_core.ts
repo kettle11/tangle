@@ -205,7 +205,7 @@ export class OfflineWarpCore {
 
     private async _revert_to_length(actions_length: number) {
         if (actions_length != this._actions.length) {
-            console.log("ROLLING BACK: ", this._actions.length - actions_length);
+            // console.log("ROLLING BACK: ", this._actions.length - actions_length);
         }
         let memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
 
@@ -249,6 +249,10 @@ export class OfflineWarpCore {
         }
     }
 
+    steps_remaining(time_to_progress: number): number {
+        return (((this.current_time + time_to_progress) - this.recurring_call_time) / this._recurring_call_interval);
+    }
+
     async progress_time(time_progressed: number) {
         if (time_progressed <= 0) {
             return;
@@ -283,7 +287,7 @@ export class OfflineWarpCore {
         }
     }
 
-    private async _call_inner(function_name: string, time_stamp: TimeStamp, args: number[]) {
+    private async _call_inner(function_name: string, time_stamp: TimeStamp, args: number[]): Promise<number> {
         // Rewind any function calls that occur after this.
         let i = this.function_calls.length;
         for (; i > 0; i--) {
@@ -325,6 +329,7 @@ export class OfflineWarpCore {
 
             (this.wasm_instance?.instance.exports[f.name] as CallableFunction)(...f.args);
         }
+        return i;
     }
 
     next_time_stamp(): TimeStamp {
@@ -338,9 +343,13 @@ export class OfflineWarpCore {
     async call_with_time_stamp(time_stamp: TimeStamp, function_name: string, args: [number]) {
         // TODO: Check for a PlayerId to insert into args
         // TODO: Use a real player ID.
-        await this._call_inner(function_name, time_stamp, args);
+        let new_call_index = await this._call_inner(function_name, time_stamp, args);
 
-        console.log("HASH AFTER CALL: ", this.hash());
+        if (this.function_calls[new_call_index + 1]) {
+            console.log("HASH AFTER CALL: ", this.function_calls[new_call_index + 1].hash_before);
+        } else {
+            console.log("HASH AFTER CALL: ", this.hash());
+        }
         console.log("FUNCTION CALLS: ", this.function_calls);
         this.time_offset += 1;
     }

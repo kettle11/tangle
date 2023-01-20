@@ -38,6 +38,16 @@ export class WarpCore {
         return warp_core;
     }
 
+    private request_heap() {
+        // Ask an arbitrary peer for the heap
+        let lowest_latency_peer = this.room.get_lowest_latency_peer();
+        if (lowest_latency_peer) {
+            this.room.message_specific_peer(lowest_latency_peer, JSON.stringify({
+                message_type: MessageType.RequestHeap,
+            }));
+        }
+    }
+
     private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void) {
         let room_configuration = {
             on_peer_joined: (peer_id: string) => {
@@ -55,13 +65,7 @@ export class WarpCore {
                 console.log("[warpcore] Room state changed: ", RoomState[state]);
 
                 if (state == RoomState.Connected) {
-                    // Ask an arbitrary peer for the heap
-                    let lowest_latency_peer = this.room.get_lowest_latency_peer();
-                    if (lowest_latency_peer) {
-                        this.room.message_specific_peer(lowest_latency_peer, JSON.stringify({
-                            message_type: MessageType.RequestHeap,
-                        }));
-                    }
+                    this.request_heap();
                 }
 
                 on_state_change_callback?.(state);
@@ -148,6 +152,7 @@ export class WarpCore {
                         let decoded_heap = this._warp_core.gzip_decode(this._loading_heap!);
                         this._loading_heap = undefined;
 
+                        // TODO: Push forward current_time based on latency and last message received time.
                         await this._warp_core.reset_with_wasm_memory(
                             decoded_heap,
                             this._loading_heap_message!.current_time,
@@ -196,31 +201,45 @@ export class WarpCore {
         }
     }
 
+    /// Resync with the room, immediately catching up.
+    resync() {
+        this.request_heap();
+    }
+
     async progress_time(time_progressed: number) {
         // TODO: Check if too much time is being progressed and if so consider a catchup strategy
         // or consider just disconnecting and reconnecting.
-        await this._warp_core.progress_time(time_progressed);
+        let steps_remaining = this._warp_core.steps_remaining(time_progressed);
 
+        // TODO: Detect if we're falling behind and can't keep up.
 
-        // Keep track of when a message was received from each peer
-        // and use that to determine what history is safe to throw away.
-        let earliest_safe_memory = this._warp_core.recurring_call_time;
-        for (let [_, value] of this._peer_data) {
-            earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
+        // If we've fallen too far behind resync and catchup.
+        if (steps_remaining > 4 && this._peer_data.size > 0) {
+            this.request_heap();
+        } else {
 
-            // If we haven't message our peers in a while send them a message
-            // This lets them know nothing has happened and they can clear memory.
-            // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
-            // it'd be better to figure out if those could be used instead.
-            const KEEP_ALIVE_THRESHOLD = 200;
-            if ((this._warp_core.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
-                this.room.broadcast(JSON.stringify({
-                    message_type: MessageType.TimeProgressed,
-                    time: this._warp_core.current_time
-                }));
+            await this._warp_core.progress_time(time_progressed);
+
+            // Keep track of when a message was received from each peer
+            // and use that to determine what history is safe to throw away.
+            let earliest_safe_memory = this._warp_core.recurring_call_time;
+            for (let [_, value] of this._peer_data) {
+                earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
+
+                // If we haven't message our peers in a while send them a message
+                // This lets them know nothing has happened and they can clear memory.
+                // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
+                // it'd be better to figure out if those could be used instead.
+                const KEEP_ALIVE_THRESHOLD = 200;
+                if ((this._warp_core.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
+                    this.room.broadcast(JSON.stringify({
+                        message_type: MessageType.TimeProgressed,
+                        time: this._warp_core.current_time
+                    }));
+                }
             }
+            this.remove_history_before(earliest_safe_memory);
         }
-        this.remove_history_before(earliest_safe_memory);
     }
 
     private remove_history_before(time_exclusive: number) {

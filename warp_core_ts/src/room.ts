@@ -13,9 +13,12 @@ export enum RoomState {
     Disconnected
 }
 
-class Peer {
-    constructor(public connection: RTCPeerConnection, public data_channel: RTCDataChannel) { }
+type Peer = {
+    connection: RTCPeerConnection,
+    data_channel: RTCDataChannel,
+    ready: boolean,
 }
+
 
 export class Room {
     private _peers_to_join: Set<string> = new Set();
@@ -33,6 +36,10 @@ export class Room {
     broadcast(data: string | Blob | ArrayBuffer | ArrayBufferView) {
         // TODO: Fragment data if too large
         for (let [_, peer] of this._peers) {
+            if (!peer.ready) {
+                continue;
+            }
+
             // TODO: Figure out if there's a better way to call this without the
             // 'as any'
             peer.data_channel.send(data as any);
@@ -40,11 +47,17 @@ export class Room {
     }
 
     message_specific_peer(peer_id: string, data: string | Blob | ArrayBuffer | ArrayBufferView) {
-        // TODO: Fragment data if too large
+        let peer = this._peers.get(peer_id);
+        if (peer) {
+            if (!peer.ready) {
+                return;
+            }
+            // TODO: Fragment data if too large
 
-        // TODO: Figure out if there's a better way to call this without the
-        // 'as any'
-        this._peers.get(peer_id)?.data_channel.send(data as any);
+            // TODO: Figure out if there's a better way to call this without the
+            // 'as any'
+            this._peers.get(peer_id)?.data_channel.send(data as any);
+        }
     }
 
     get_lowest_latency_peer(): string | undefined {
@@ -62,7 +75,7 @@ export class Room {
 
         this._configuration = room__configuration;
         this._configuration.name ??= "";
-        this._configuration.server_url ??= "0.0.0.0:8081";
+        this._configuration.server_url ??= "192.168.68.109:8081";
 
         const server_socket = new WebSocket("ws://" + this._configuration.server_url);
         server_socket.onopen = () => {
@@ -205,6 +218,7 @@ export class Room {
                 });
                 this._peers_to_join.delete(peer_id);
 
+                this._peers.get(peer_id)!.ready = true;
                 this._configuration.on_peer_joined?.(peer_id);
                 this.check_if_joined();
             });
@@ -215,7 +229,7 @@ export class Room {
             this._configuration.on_message?.(peer_id, event.data);
         }
 
-        this._peers.set(peer_id, new Peer(peer_connection, data_channel));
+        this._peers.set(peer_id, { connection: peer_connection, data_channel, ready: false });
         return peer_connection;
     }
 
