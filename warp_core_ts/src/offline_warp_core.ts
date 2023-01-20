@@ -50,38 +50,59 @@ export class OfflineWarpCore {
     /// The user Wasm that WarpCore is syncing 
     wasm_instance?: WebAssembly.WebAssemblyInstantiatedSource = undefined;
     current_time: number = 0;
-    time_offset: number = 0;
+    private time_offset: number = 0;
     private _recurring_call_interval: number = 0;
-    private _recurring_call_time: number = 0;
-    private _recurring_call_name?: string = undefined;
+    recurring_call_time: number = 0;
+    private _recurring_call_name?: string = "fixed_update";
     private _actions: Array<WasmAction> = [];
     function_calls: Array<FunctionCall> = [];
     private _imports: WebAssembly.Imports = {};
 
-    static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports): Promise<OfflineWarpCore> {
+    static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports, recurring_call_interval: number): Promise<OfflineWarpCore> {
         // TODO: Support setting the recurring call interval
-        OfflineWarpCore._warpcore_wasm ??= await WebAssembly.instantiateStreaming(fetch("warpcore_mvp.wasm"));
+
+        let decoder = new TextDecoder();
+
+        let imports_warp_core_wasm: WebAssembly.Imports = {
+            env: {
+                external_log: function (pointer: number, length: number) {
+                    let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
+                    const message_data = new Uint8Array(memory.buffer, pointer, length);
+                    const decoded_string = decoder.decode(new Uint8Array(message_data));
+                    console.log(decoded_string);
+                },
+                external_error: function (pointer: number, length: number) {
+                    let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
+                    const message_data = new Uint8Array(memory.buffer, pointer, length);
+                    const decoded_string = decoder.decode(new Uint8Array(message_data));
+                    console.error(decoded_string);
+                }
+            }
+        };
+
+        OfflineWarpCore._warpcore_wasm ??= await WebAssembly.instantiateStreaming(fetch("warpcore_mvp.wasm"), imports_warp_core_wasm);
 
         let processed_binary = await process_binary(wasm_binary);
 
         let warpcore = new OfflineWarpCore();
+        warpcore._recurring_call_interval = recurring_call_interval;
         warpcore._imports = imports;
 
         warpcore._imports.wasm_guardian = {
-            on_store: () => (location: number, size: number) => {
-                console.log("on_store called: ", location, size);
+            on_store: (location: number, size: number) => {
+                //  console.log("on_store called: ", location, size);
                 let memory = warpcore.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
                 let old_value = new Uint8Array(new Uint8Array(memory.buffer, location, size));
 
-                warpcore._actions.push({ action_type: WasmActionType.Store, location: location, old_value: old_value, /* hash: new Uint8Array(xxh3_128_bit_hash(wasm_memory.buffer))*/ });
+                warpcore._actions.push({ action_type: WasmActionType.Store, location: location, old_value: old_value });
             },
-            on_grow: () => (pages: number) => {
-                console.log("on_grow called: ", pages);
+            on_grow: (pages: number) => {
+                //  console.log("on_grow called: ", pages);
                 let memory = warpcore.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
                 warpcore._actions.push({ action_type: WasmActionType.Grow, old_page_count: memory.buffer.byteLength / WASM_PAGE_SIZE });
             },
             on_global_set: (id: number) => {
-                console.log("on_global_set called: ", id);
+                //  console.log("on_global_set called: ", id);
                 let global_id = "wg_global_" + id;
                 warpcore._actions.push({ action_type: WasmActionType.GlobalSet, global_id: global_id, old_value: warpcore.wasm_instance?.instance.exports[global_id] });
             },
@@ -93,22 +114,41 @@ export class OfflineWarpCore {
     }
 
     /// Restarts the WarpCore with a new memory.
-    async reset_with_wasm_memory(new_memory_data: Uint8Array, current_time: number, _recurring_call_time: number) {
-        let pages = new_memory_data.byteLength / WASM_PAGE_SIZE;
+    async reset_with_wasm_memory(new_memory_data: Uint8Array, current_time: number, recurring_call_time: number) {
+        let mem = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
+        let page_diff = (new_memory_data.byteLength - mem.buffer.byteLength) / WASM_PAGE_SIZE;
 
-        let new_memory = new WebAssembly.Memory({
-            initial: pages
-        });
-        this._imports.env.mem = new_memory;
+        if (page_diff < 0) {
+            this.wasm_instance!.instance = await WebAssembly.instantiate(this.wasm_instance!.module, this._imports);
+        }
 
-        this.wasm_instance!.instance = await WebAssembly.instantiate(this.wasm_instance!.module, this._imports);
-        new Uint8Array(new_memory.buffer).set(new_memory_data);
+        let old_memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
+        if (page_diff > 0) {
+            old_memory.grow(page_diff);
+        }
+
+        new Uint8Array(old_memory.buffer).set(new_memory_data);
         this._actions = [];
         this.function_calls = [];
 
         this.current_time = current_time;
-        this._recurring_call_time = _recurring_call_time;
+        this.recurring_call_time = recurring_call_time;
         this.time_offset = 0;
+    }
+
+    remove_history_before(time_exclusive: number) {
+        // TODO / LEFT OFF: This isn't correctly exclusive.
+        let step = 0;
+        for (; step < this.function_calls.length; step++) {
+            if (this.function_calls[step].time_stamp.time >= time_exclusive) {
+                break;
+            }
+        }
+        let first_function = this.function_calls.splice(0, step)[0];
+
+        if (first_function) {
+            this._actions.splice(first_function.actions_length_before);
+        }
     }
 
     private async _rollback_to_length(actions_length: number) {
@@ -150,22 +190,30 @@ export class OfflineWarpCore {
     }
 
     async progress_time(time_progressed: number) {
-        this.current_time += time_progressed;
-
-        if (time_progressed > 0) {
-            this.time_offset = 0;
+        if (time_progressed <= 0) {
+            return;
         }
 
+        if (this._recurring_call_interval == 0) {
+            return;
+        }
+
+        this.current_time += time_progressed;
+
+        this.time_offset = 0;
+
+        if (!this.current_time) {
+        }
         // Trigger all of the recurring calls.
         // TODO: Check if recurring call interval is defined at all.
-        while ((this.current_time - this._recurring_call_time) > this._recurring_call_interval) {
+        while ((this.current_time - this.recurring_call_time) > this._recurring_call_interval) {
             this.time_offset = 0;
-            this._recurring_call_time += this._recurring_call_interval;
+            this.recurring_call_time += this._recurring_call_interval;
 
             if (this._recurring_call_name) {
                 // TODO: Real player ID.
                 let time_stamp = {
-                    time: this._recurring_call_time,
+                    time: this.recurring_call_time,
                     offset: 0, // A recurring call should always be the first call
                     player_id: 0
                 };
@@ -177,10 +225,14 @@ export class OfflineWarpCore {
 
     private async _call_inner(function_name: string, time_stamp: TimeStamp, args: number[]) {
         // Rewind any function calls that occur after this.
-        let i = this.function_calls.length - 1;
-        for (; i >= 0; i--) {
-            if (!time_stamp_less_than(this.function_calls[i].time_stamp, time_stamp)) {
-                await this._rollback_to_length(this.function_calls[i].actions_length_before);
+        let i = this.function_calls.length;
+        for (; i > 0; i--) {
+            let function_call = this.function_calls[i - 1];
+            if (time_stamp_less_than(function_call.time_stamp, time_stamp)) {
+
+                if (this.function_calls[i]) {
+                    await this._rollback_to_length(this.function_calls[i].actions_length_before);
+                }
                 break;
             }
         }
@@ -197,7 +249,7 @@ export class OfflineWarpCore {
 
         // Replay any function calls that occur after this function
         for (let j = i + 1; j < this.function_calls.length; j++) {
-            let f = this.function_calls[i];
+            let f = this.function_calls[j];
             let actions_length_before = this._actions.length;
             f.actions_length_before = actions_length_before;
 
@@ -232,16 +284,17 @@ export class OfflineWarpCore {
     }
 
 
+
     // TODO: These are just helpers and aren't that related to the rest of the code in this:
     gzip_encode(data_to_compress: Uint8Array) {
         let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
-        let instance = this.wasm_instance!.instance.exports;
+        let exports = OfflineWarpCore._warpcore_wasm!.instance.exports;
 
-        let pointer = (instance.reserve_space as CallableFunction)(data_to_compress.byteLength);
+        let pointer = (exports.reserve_space as CallableFunction)(data_to_compress.byteLength);
         const destination = new Uint8Array(memory.buffer, pointer, data_to_compress.byteLength);
         destination.set(new Uint8Array(data_to_compress));
 
-        (instance.gzip_encode as CallableFunction)();
+        (exports.gzip_encode as CallableFunction)();
         let result_pointer = new Uint32Array(memory.buffer, pointer, 2);
         let result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
         console.log("COMPRESSED LENGTH: ", result_data.byteLength);
@@ -251,7 +304,7 @@ export class OfflineWarpCore {
 
     gzip_decode(data_to_decode: Uint8Array) {
         let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
-        let instance = this.wasm_instance!.instance.exports;
+        let instance = OfflineWarpCore._warpcore_wasm!.instance.exports;
 
         let pointer = (instance.reserve_space as CallableFunction)(data_to_decode.byteLength);
         const destination = new Uint8Array(memory.buffer, pointer, data_to_decode.byteLength);
@@ -260,7 +313,24 @@ export class OfflineWarpCore {
         (instance.gzip_decode as CallableFunction)();
         let result_pointer = new Uint32Array(memory.buffer, pointer, 2);
         let result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
-        return result_data;
+        return new Uint8Array(result_data);
+    }
+
+    hash(): Uint8Array {
+        let data_to_hash = new Uint8Array((this.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer);
+        return this.hash_data(data_to_hash);
+    }
+    hash_data(data_to_hash: Uint8Array): Uint8Array {
+        let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
+        let instance = OfflineWarpCore._warpcore_wasm!.instance.exports;
+
+        let pointer = (instance.reserve_space as CallableFunction)(data_to_hash.byteLength);
+        const destination = new Uint8Array(memory.buffer, pointer, data_to_hash.byteLength);
+        destination.set(new Uint8Array(data_to_hash));
+
+        (instance.xxh3_128_bit_hash as CallableFunction)();
+        let hashed_result = new Uint8Array(new Uint8Array(memory.buffer, pointer, 16));
+        return hashed_result;
     }
 }
 /// Preprocess the binary to record all persistent state edits.

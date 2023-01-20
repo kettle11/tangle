@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "esbuild --mangle-props=^_ src/warp_core.ts --bundle --outfile=out.js --minify --minify-identifiers"
+    "build": "esbuild src/warp_core.ts --bundle --outfile=../web_example/warp_core.js --format=esm --sourcemap",
+    "build_release": "esbuild --mangle-props=^_ src/warp_core.ts --bundle --outfile=out.js --minify --format=esm"
   },
   "keywords": [],
   "author": "",

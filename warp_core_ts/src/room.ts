@@ -21,6 +21,7 @@ export class Room {
     private _current_state: RoomState = RoomState.Disconnected;
     private _peers: Map<string, Peer> = new Map();
     private _configuration: RoomConfiguration = {};
+    private _current_room_name: String = "";
 
     static async setup(_configuration: RoomConfiguration): Promise<Room> {
         let room = new Room();
@@ -47,10 +48,17 @@ export class Room {
 
     get_lowest_latency_peer(): string | undefined {
         // TODO: Implement this.
-        return undefined;
+        return this._peers.entries().next().value?.[0];
     }
 
     private async _setup_inner(room__configuration: RoomConfiguration) {
+        onhashchange = (event) => {
+            if (this._current_room_name != document.location.hash.substring(1)) {
+                location.reload();
+                this._current_room_name = document.location.hash.substring(1);
+            }
+        };
+
         this._configuration = room__configuration;
         this._configuration.name ??= "";
         this._configuration.server_url ??= "0.0.0.0:8081";
@@ -75,7 +83,7 @@ export class Room {
                 console.log("[room] Entering room: ", message.room_name);
 
                 this._current_state = RoomState.Joining;
-                this.__peers_to_join = new Set(message._peers);
+                this.__peers_to_join = new Set(message.peers);
 
                 this._configuration.on_state_change?.(this._current_state);
 
@@ -84,6 +92,12 @@ export class Room {
                     this.__peers_to_join.delete(key);
                 }
                 this.check_if_joined();
+
+                // TODO: Make this messing with the URL an optional thing.
+                document.location =
+                    document.location.origin.toString() +
+                    '#' + message.room_name;
+                this._current_room_name = message.room_name;
             } else if (message.join_room) {
                 console.log("[room] Peer joining room: ", peer_id);
                 this.make_rtc_peer_connection(peer_id, server_socket);
@@ -198,7 +212,7 @@ export class Room {
 
         data_channel.onmessage = (event) => {
             // Call the user provided callback
-            this._configuration.on_message?.(event.data, peer_id);
+            this._configuration.on_message?.(peer_id, event.data);
         }
 
         this._peers.set(peer_id, new Peer(peer_connection, data_channel));

@@ -17,8 +17,8 @@ once_cell = "1.17.0"
 
 [profile.release]
 # Consider these options for a smaller binary size
- strip = true
- panic = "abort"
+ # strip = true
+ # panic = "abort"
  # opt-level = "z"  # Optimize for size.
  lto = true
  codegen-units = 1

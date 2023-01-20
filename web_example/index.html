@@ -9,11 +9,9 @@
     <body style="margin:0; overflow-y: hidden;overflow-x: hidden; touch-action: none;">
         <canvas id="myCanvas" style="width:100vw; height: 100vh; "></canvas>
     </body>
-    <script src="room.js" type="module"></script>
-    <script src="manager.js" type="module"></script>
+    <script src="warp_core.js" type="module"></script>
     <script type="module">
-        import { getWarpCore } from "./manager.js";
-        let start_time = Date.now();
+        import { WarpCore, RoomState } from "./warp_core.js";
 
         async function run() {
             const image = new Image(60, 45); // Using optional size for image
@@ -33,15 +31,18 @@
             context.fillRect(0, 0, canvas.width, canvas.height);
 
             let wasm_binary = await fetch("example_script.wasm").then(response => response.arrayBuffer());
+            const decoder = new TextDecoder();
+
             let imports = {
                 env: {
                     external_log: function (pointer, length) {
+                        let memory = warpcore.get_memory();
                         console.log("EXTERNAL LOG CALLED");
-                        /*
+
                         const message_data = new Uint8Array(memory.buffer, pointer, length);
                         const decoded_string = decoder.decode(new Uint8Array(message_data));
                         console.log(decoded_string);
-                        */
+
                     },
                     external_error: function (pointer, length) {
                         console.log("EXTERNAL ERROR CALLED");
@@ -69,149 +70,42 @@
 
             let player_id = 0;
             let current_animation_time = Date.now();
-
             let fixed_update_rate = 1000 / 60;
-            let warpcore = await getWarpCore(wasm_binary, imports,
-                fixed_update_rate,
-                // On Load
-                async (time) => {
+            let start_time = 0;
+            async function animation() {
+                let time_now = Date.now();
+                let diff = time_now - current_animation_time;
 
-                    // TODO: This ID might change if this is rolled back.
-                    player_id = 0;//await warpcore.call_wasm("add_player", [Math.random() * 255, Math.random() * 255, Math.random() * 255, Math.random() * 9], Date.now());
-                    console.log("NEW PLAYER WITH ID: ", player_id);
+                context.clearRect(0, 0, context.canvas.width, context.canvas.height);
 
-                    current_animation_time = time;
+                // TODO: This will cause issues and instead some sort of 'catchup' or just 
+                // a reconnect should be initiated.
+                if (diff > fixed_update_rate * 3) {
+                    diff = 0;
+                }
+                await warpcore.progress_time(diff);
+                await warpcore.call_and_revert("draw", []);
 
-                    async function animation() {
-                        let time_now = Date.now();
-                        let diff = time_now - current_animation_time;
+                // TODO: THIS IS SUPER WRONG AND WILL DESYNC IF PEERS HAVE FLAKEY CONNECTIONS
+                warpcore.remove_history_before((time_now - start_time) - 100);
 
-                        let stop = (diff / fixed_update_rate) > 4;
-                        if (stop) {
-                            console.log("RUNNING SLOW");
-                        }
-                        /*
-                        if ((diff / fixed_update_rate) > 4) {
-                            fixed_update_rate *= 2;
-                            console.log("SLOWING FIXED UPDATE TO: ", fixed_update_rate);
-                            console.log("TIME DIFF: ", diff);
-                            warpcore.set_recurring_call_interval(fixed_update_rate);
-                        }
-                        */
+                window.requestAnimationFrame(animation);
 
-                        if (!stop) {
-                            if (!warpcore.is_paused()) {
-                                context.clearRect(0, 0, context.canvas.width, context.canvas.height);
-                                // This is OK to use Date.now because the script doesn't actually edit
-                                // anything (yet)
+                current_animation_time = time_now;
+            }
 
-                                await warpcore.progress_time(time_now);
-                                await warpcore.call_wasm_unnetworked_and_rollback("draw", [], time_now);
-
-                                // TODO: THIS IS SUPER WRONG AND WILL DESYNC IF PEERS HAVE FLAKEY CONNECTIONS
-                                warpcore.remove_history(time_now - 200);
-                            }
-
-                        }
-                        if (!stop) {
-                            window.requestAnimationFrame(animation);
-                        }
-
-                        current_animation_time = time_now;
-                    }
+            let warpcore = await WarpCore.setup(wasm_binary, imports, fixed_update_rate, (state) => {
+                if (state === RoomState.Connected) {
+                    start_time = Date.now();
                     animation();
-                },
-                // On update
-                async () => {
-                    //await warpcore.call_wasm("draw", [], Date.now());
-                });
-
-
-            /*
-        document.onkeydown = async (event) => {
-    
-            if (event.code == "ArrowLeft") {
-                await warpcore.call_wasm("set_x_axis", [player_id, -1], Date.now());
-            }
-    
-            if (event.code == "ArrowRight") {
-                await warpcore.call_wasm("set_x_axis", [player_id, 1], Date.now());
-            }
-    
-            if (event.code == "ArrowUp") {
-                await warpcore.call_wasm("set_y_axis", [player_id, -1], Date.now());
-            }
-    
-            if (event.code == "ArrowDown") {
-                await warpcore.call_wasm("set_y_axis", [player_id, 1], Date.now());
-            }
-    
-        };
-        */
+                }
+            });
 
             document.onkeyup = async (event) => {
-
                 if (event.code == "Digit1") {
                     await warpcore.call_wasm_unnetworked("fixed_update", [], 15);
                     await warpcore.call_wasm_unnetworked("fixed_update", [], 25);
                 }
-
-                /*
-                if (event.code == "Digit2") {
-                    // Left off: Reconstruct above sequence
-                    await warpcore.log_hash();
-                    await warpcore.call_wasm("add_ball", [1, 10, 13, 0.5, 12, 12, 12], 10);
-                    console.log("AFTER add_ball 0 ");
-                    await warpcore.log_hash();
-    
-                    await warpcore.call_wasm_unnetworked("fixed_update", [], 15);
-                    console.log("AFTER FIXED UPDATE 0");
-                    await warpcore.log_hash();
-    
-                    await warpcore.call_wasm("add_ball", [1, 10, 13, 0.5, 12, 12, 12], 20);
-                    console.log("AFTER add_ball 1");
-                    await warpcore.log_hash();
-    
-                    await warpcore.call_wasm_unnetworked("fixed_update", [], 25);
-                    console.log("AFTER FIXED UPDATE 1");
-                    await warpcore.log_hash();
-                }
-    
-                if (event.code == "Digit3") {
-                    // Left off: Reconstruct above sequence
-    
-                    await warpcore.call_wasm_unnetworked("fixed_update", [], 15);
-                    await warpcore.call_wasm_unnetworked("fixed_update", [], 25);
-    
-                    console.log("INSERTING EVENTS");
-                    //  await warpcore.rewind(10);
-                    console.log("HERE0");
-                    await warpcore.log_hash();
-                    await warpcore.call_wasm_unnetworked("add_ball", [1, 10, 13, 0.5, 12, 12, 12], 10);
-                    console.log("HERE1");
-                    await warpcore.log_hash();
-    
-                    await warpcore.call_wasm_unnetworked("add_ball", [1, 10, 13, 0.5, 12, 12, 12], 20);
-                    console.log("HERE2");
-                    await warpcore.log_hash();
-                }
-                */
-
-
-
-                /*
-                if (event.code == "KeyH") {
-                    await warpcore.log_hash();
-                }
-
-                if (event.code == "KeyD") {
-                    await warpcore.call_wasm("add_ball", [player_id, Math.random() * canvas.width, Math.random() * canvas.height, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255], window.last_wasm_sent_time - 10);
-                }
-
-                if (event.code == "KeyF") {
-                    await warpcore.call_wasm_unnetworked("fixed_update", [], window.last_wasm_sent_time - 10);
-                }
-                */
 
                 if (event.code == "KeyA") {
                     await warpcore.call_wasm("add_ball", [player_id, Math.random() * canvas.width, Math.random() * canvas.height, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255], Date.now());
@@ -225,11 +119,15 @@
                 if (event.code == "KeyF") {
                     warpcore.log_function_calls();
                 }
+
+                if (event.code == "KeySpace") {
+
+                    animation();
+                }
             };
 
             canvas.onpointerdown = async (event) => {
-
-                await warpcore.call_wasm("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255], Date.now());
+                await warpcore.call("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255]);
             };
         };
         run();

@@ -169,6 +169,11 @@ extern "C" fn pointer_down(player: usize, x: u32, y: u32, v: f32) {
 
 #[no_mangle]
 extern "C" fn add_ball(player: usize, x: u32, y: u32, v: f32, r: u8, g: u8, b: u8) {
+    unsafe {
+        GLOBAL_DATA += 1;
+        log(&format!("COUNT: {:?}", GLOBAL_DATA));
+    }
+
     initialize_rapier();
     unsafe {
         let rapier = STATE.rapier.as_mut().unwrap();
@@ -224,6 +229,8 @@ fn initialize_rapier() {
         }
     }
 }
+
+static mut GLOBAL_DATA: usize = 0;
 
 #[no_mangle]
 extern "C" fn fixed_update() {
@@ -327,4 +334,21 @@ extern "C" {
     pub(crate) fn draw_rect(r: u8, g: u8, b: u8, a: u8, x: f32, y: f32, w: f32, h: f32);
     pub(crate) fn draw_image(sx: u32, yx: u32, sw: u32, sh: u32, x: u32, y: u32, w: u32, h: u32);
 
+}
+
+extern "C" {
+    pub(crate) fn external_log(data: *const u8, data_length: u32);
+    pub(crate) fn external_error(data: *const u8, data_length: u32);
+}
+
+pub fn log(s: &str) {
+    unsafe {
+        external_log(s.as_ptr(), s.len() as _);
+    }
+}
+
+pub fn error(s: &str) {
+    unsafe {
+        external_error(s.as_ptr(), s.len() as _);
+    }
 }
