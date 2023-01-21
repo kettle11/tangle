@@ -1,5 +1,5 @@
 import { Room, RoomState } from "./room.js";
-import { OfflineWarpCore, FunctionCall } from "./offline_warp_core.js";
+import { OfflineWarpCore, FunctionCall, arrayEquals } from "./offline_warp_core.js";
 
 export { RoomState } from "./room.js";
 
@@ -91,14 +91,34 @@ export class WarpCore {
                             } else {
                                 console.log("REMOTE CALL: ", m.function_name);
 
-                                if (m.time_stamp.time < this._warp_core.recurring_call_time) {
+                                let requires_rollback = m.time_stamp.time < this._warp_core.recurring_call_time;
+                                if (requires_rollback) {
                                     console.log("THIS WILL REQUIRE A ROLLBACK");
                                 }
                                 // Note: If this is negative the implementation of progress_time simply does nothing.
                                 await this.progress_time(m.time_stamp.time - this._warp_core.current_time);
 
                                 // TODO: Could this be reentrant if incoming messages aren't respecting the async-ness?
-                                await this._warp_core.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
+                                let _ = await this._warp_core.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
+
+                                /*
+                                let hash_after;
+                                if (this._warp_core.function_calls[new_function_call_index + 1]) {
+                                    hash_after = this._warp_core.function_calls[new_function_call_index + 1].hash_before;
+                                } else {
+                                    hash_after = this._warp_core.hash();
+                                }
+
+                                if (!arrayEquals(Object.values(m.hash_after), hash_after)) {
+                                    console.error("DESYNCED HASH!");
+                                    console.log("MESSAGE HASH: ", m.hash_after);
+                                    console.log("MY HASH: ", hash_after);
+                                } else {
+                                    if (requires_rollback) {
+                                        console.log("SUCCESSFUL ROLLBACK");
+                                    }
+                                }
+                                */
                             }
                             // TODO: Check if these are sent before the heap is loaded
                             break;
@@ -176,7 +196,14 @@ export class WarpCore {
         if (this._bytes_remaining_for_heap_load == 0) {
 
             let time_stamp = this._warp_core.next_time_stamp();
-            this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
+            let new_function_call_index = await this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
+
+            let hash = null;
+            if (this._warp_core.function_calls[new_function_call_index + 1]) {
+                hash = this._warp_core.function_calls[new_function_call_index + 1].hash_before;
+            } else {
+                hash = this._warp_core.hash();
+            }
 
             // Network the call
             this.room.broadcast(JSON.stringify({
@@ -184,9 +211,8 @@ export class WarpCore {
                 time_stamp: time_stamp,
                 function_name: function_name,
                 args: args,
+                hash_after: hash,
             }));
-
-            console.log("HASH HERE: ", this._warp_core.hash());
 
             for (let [_, value] of this._peer_data) {
                 value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
@@ -215,7 +241,7 @@ export class WarpCore {
         // TODO: Detect if we're falling behind and can't keep up.
 
         // If we've fallen too far behind resync and catchup.
-        if (steps_remaining > 4 && this._peer_data.size > 0) {
+        if (steps_remaining > 20 && this._peer_data.size > 0) {
             this.request_heap();
         } else {
 
@@ -239,16 +265,14 @@ export class WarpCore {
                     }));
                 }
             }
-            this.remove_history_before(earliest_safe_memory);
+
+            // This - 300 is for debugging purposes only
+            this.remove_history_before(earliest_safe_memory - 300);
         }
     }
 
     private remove_history_before(time_exclusive: number) {
         this._warp_core.remove_history_before(time_exclusive);
-    }
-
-    rewind_time(length: number) {
-        this._warp_core.revert_to_length(length);
     }
 
     get_memory(): WebAssembly.Memory {

@@ -52,9 +52,9 @@ function time_stamp_less_than(a: TimeStamp, b: TimeStamp): boolean {
 export type FunctionCall = {
     name: string,
     args: Array<number>,
-    actions_length_before: number,
+    actions_caused: number,
     time_stamp: TimeStamp
-    hash_before: Uint8Array,
+    // hash_before: Uint8Array,
 };
 
 export class OfflineWarpCore {
@@ -120,7 +120,7 @@ export class OfflineWarpCore {
                 let memory = warpcore.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
                 console.log("NEW MEMORY SIZE IN PAGES: ", (memory.buffer.byteLength / WASM_PAGE_SIZE) + 1);
 
-                warpcore._actions.push({ action_type: WasmActionType.Grow, old_page_count: memory.buffer.byteLength / WASM_PAGE_SIZE, /* hash_before: warpcore.hash()*/ });
+                warpcore._actions.push({ action_type: WasmActionType.Grow, old_page_count: memory.buffer.byteLength / WASM_PAGE_SIZE, /* hash_before: warpcore.hash() */ });
             },
             on_global_set: (id: number) => {
                 //  console.log("on_global_set called: ", id);
@@ -131,7 +131,6 @@ export class OfflineWarpCore {
         let wasm_instance = await WebAssembly.instantiate(processed_binary, warpcore._imports);
 
         warpcore.wasm_instance = wasm_instance;
-        console.log("INITIAL HASH: ", warpcore.hash());
 
         return warpcore;
     }
@@ -146,6 +145,7 @@ export class OfflineWarpCore {
 
         if (page_diff < 0) {
             this.wasm_instance!.instance = await WebAssembly.instantiate(this.wasm_instance!.module, this._imports);
+            page_diff = (new_memory_data.byteLength - (this.wasm_instance?.instance.exports.memory as WebAssembly.Memory).buffer.byteLength) / WASM_PAGE_SIZE;
         }
 
         let old_memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
@@ -166,50 +166,32 @@ export class OfflineWarpCore {
         this.time_offset = 0;
     }
 
-    remove_history_before(time_exclusive: number) {
-        // TODO: This function is quite broken
-        // TODO: Handle the case where the most recent function should be removed as well.
+    remove_history_before(time: number) {
+        // TODO: More carefully audit this function for correctness.
 
+        let to_remove = 0;
 
-        let step = 0;
-        for (; step < this.function_calls.length; step++) {
-            if (this.function_calls[step].time_stamp.time >= time_exclusive) {
+        let i = 0;
+        for (i = 0; i < this.function_calls.length; i++) {
+            let f = this.function_calls[i];
+            if (f.time_stamp.time < time) {
+                to_remove += f.actions_caused;
+            } else {
                 break;
             }
         }
 
         // Remove all actions that occurred before this.
-        let last_function = this.function_calls[step];
-        let to_remove = 0;
-        if (last_function) {
-            to_remove = this._actions.length - last_function.actions_length_before;
-            this._actions.splice(0, to_remove);
-        }
+        this._actions.splice(0, to_remove);
 
-        this.function_calls.splice(0, step);
-
-        // TODO: This loop could be avoided by tracking a 'current' action index
-        // and then calculating the offset from that.
-        // But it'd require care to be correct when integers wrap.
-        for (let i = 0; i < this.function_calls.length; i++) {
-            this.function_calls[i].actions_length_before -= to_remove;
-        }
-
-        // console.log("ACTIONS LEN: ", this._actions.length);
-        // console.log("FUNCTIONS LEN: ", this.function_calls.length);
+        this.function_calls.splice(0, i);
     }
 
-    async revert_to_length(actions_length: number) {
-        await this._revert_to_length(actions_length);
-    }
 
-    private async _revert_to_length(actions_length: number) {
-        if (actions_length != this._actions.length) {
-            // console.log("ROLLING BACK: ", this._actions.length - actions_length);
-        }
+    private async _revert_actions(actions_to_remove: number) {
         let memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
 
-        let to_rollback = this._actions.splice(actions_length, this._actions.length - actions_length);
+        let to_rollback = this._actions.splice(this._actions.length - actions_to_remove, actions_to_remove);
         for (let i = to_rollback.length - 1; i >= 0; i--) {
             let action = to_rollback[i];
             switch (action.action_type) {
@@ -217,14 +199,12 @@ export class OfflineWarpCore {
                     let destination = new Uint8Array(memory.buffer, action.location, action.old_value.byteLength);
                     destination.set(action.old_value);
 
-                    /*
-                    let hash = this.hash();
-                    console.log("HASH AFTER ROLLBACK: ", this.hash());
 
-                    if (!arrayEquals(hash, action.hash_before)) {
-                        console.error("ACTION HASH DOES NOT MATCH");
-                    }
-                    */
+                    // let hash = this.hash();
+                    // if (!arrayEquals(hash, action.hash_before)) {
+                    //     console.error("ACTION HASH DOES NOT MATCH");
+                    // }
+
                     break;
                 }
                 case WasmActionType.Grow: {
@@ -233,12 +213,12 @@ export class OfflineWarpCore {
                     await this.assign_memory(new Uint8Array(memory.buffer, 0, action.old_page_count * WASM_PAGE_SIZE));
                     memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
 
-                    /*
-                    let hash = this.hash();
-                    if (!arrayEquals(hash, action.hash_before)) {
-                        console.error("GROW ACTION HASH DOES NOT MATCH");
-                    }
-                    */
+
+                    // let hash = this.hash();
+                    // if (!arrayEquals(hash, action.hash_before)) {
+                    //     console.error("GROW ACTION HASH DOES NOT MATCH");
+                    // }
+
                     break;
                 }
                 case WasmActionType.GlobalSet: {
@@ -266,11 +246,18 @@ export class OfflineWarpCore {
 
         this.time_offset = 0;
 
-        if (!this.current_time) {
-        }
+
+        const MAX_RECURRING_CALLS = 20;
+        let recurring_call_count = 0;
         // Trigger all of the recurring calls.
         // TODO: Check if recurring call interval is defined at all.
         while ((this.current_time - this.recurring_call_time) > this._recurring_call_interval) {
+            recurring_call_count += 1;
+            if (recurring_call_count > MAX_RECURRING_CALLS) {
+                console.log("BREAKING DUE TO MAX RECURRING CALLS");
+                break;
+            }
+
             this.time_offset = 0;
             this.recurring_call_time += this._recurring_call_interval;
 
@@ -290,44 +277,53 @@ export class OfflineWarpCore {
     private async _call_inner(function_name: string, time_stamp: TimeStamp, args: number[]): Promise<number> {
         // Rewind any function calls that occur after this.
         let i = this.function_calls.length;
+        let actions_to_remove = 0;
         for (; i > 0; i--) {
+            // Keep going until a timestamp less than `time_stamp` is found.
             let function_call = this.function_calls[i - 1];
             if (time_stamp_less_than(function_call.time_stamp, time_stamp)) {
 
                 if (this.function_calls[i]) {
-                    await this._revert_to_length(this.function_calls[i].actions_length_before);
+                    await this._revert_actions(actions_to_remove);
+
+                    /*
                     let hash_after_revert = this.hash();
 
                     if (!arrayEquals(hash_after_revert, this.function_calls[i].hash_before)) {
-                        console.error("HASHES DO NOT MATCH");
+                        console.error("HASHES DO NOT MATCH DURING REVERT");
                     }
+                    */
                 }
                 break;
             }
+            actions_to_remove += function_call.actions_caused;
         }
         let hash_before = this.hash();
 
-        let actions_length_before = this._actions.length;
+        let before = this._actions.length;
         (this.wasm_instance?.instance.exports[function_name] as CallableFunction)(...args);
+        let after = this._actions.length;
 
         this.function_calls.splice(i, 0, {
             name: function_name,
             args: args,
-            actions_length_before: actions_length_before,
             time_stamp: time_stamp,
-            hash_before: hash_before
+            // hash_before: hash_before,
+            actions_caused: after - before
         });
 
         // Replay any function calls that occur after this function
         for (let j = i + 1; j < this.function_calls.length; j++) {
             let f = this.function_calls[j];
-            let actions_length_before = this._actions.length;
-            f.actions_length_before = actions_length_before;
+            //f.hash_before = this.hash();
 
             // Note: It is assumed function calls cannot be inserted with an out-of-order offset by the same peer.
             // If that were true the offset would need to be checked and potentially updated here.
 
+            let before = this._actions.length;
             (this.wasm_instance?.instance.exports[f.name] as CallableFunction)(...f.args);
+            let after = this._actions.length;
+            f.actions_caused = after - before;
         }
         return i;
     }
@@ -340,26 +336,24 @@ export class OfflineWarpCore {
         };
     }
 
-    async call_with_time_stamp(time_stamp: TimeStamp, function_name: string, args: [number]) {
+    /// Returns the function call of this instance.
+    async call_with_time_stamp(time_stamp: TimeStamp, function_name: string, args: [number]): Promise<number> {
         // TODO: Check for a PlayerId to insert into args
         // TODO: Use a real player ID.
         let new_call_index = await this._call_inner(function_name, time_stamp, args);
 
-        if (this.function_calls[new_call_index + 1]) {
-            console.log("HASH AFTER CALL: ", this.function_calls[new_call_index + 1].hash_before);
-        } else {
-            console.log("HASH AFTER CALL: ", this.hash());
-        }
-        console.log("FUNCTION CALLS: ", this.function_calls);
+        // console.log("FUNCTION CALLS: ", structuredClone(this.function_calls));
         this.time_offset += 1;
+        return new_call_index;
     }
 
     /// Call a function but ensure its results do not persist and cannot cause a desync.
     /// This can be used for things like drawing or querying from the Wasm
     async call_and_revert(function_name: string, args: [number]) {
-        let actions_length = this._actions.length;
+        let before = this._actions.length;
         (this.wasm_instance?.instance.exports[function_name] as CallableFunction)(...args);
-        await this._revert_to_length(actions_length);
+        let after = this._actions.length;
+        await this._revert_actions(after - before);
     }
 
     // TODO: These are just helpers and aren't that related to the rest of the code in this:
@@ -429,7 +423,7 @@ async function process_binary(wasm_binary: Uint8Array) {
 }
 
 
-function arrayEquals(a: Uint8Array, b: Uint8Array) {
+export function arrayEquals(a: Uint8Array, b: Uint8Array) {
     if (a.length != b.length) {
         return false;
     }

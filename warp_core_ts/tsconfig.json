@@ -2,7 +2,7 @@
   "compilerOptions": {
     "outDir": "./built",
     "allowJs": true,
-    "target": "es6",
+    "target": "ES2017",
     "strict": true,
   },
   "include": [
