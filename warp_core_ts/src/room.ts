@@ -4,7 +4,7 @@ export interface RoomConfiguration {
     on_state_change?: (room_state: RoomState) => void;
     on_peer_joined?: (peer_id: string) => void;
     on_peer_left?: (peer_id: string) => void;
-    on_message?: (peer_id: string, message: any) => void;
+    on_message?: (peer_id: string, message: Uint8Array) => void;
 }
 
 export enum RoomState {
@@ -14,11 +14,21 @@ export enum RoomState {
 }
 
 type Peer = {
+    id: string,
     connection: RTCPeerConnection,
     data_channel: RTCDataChannel,
     ready: boolean,
+    latest_message_data: Uint8Array
+    latest_message_offset: number,
 }
 
+enum MessageType {
+    MultiPartStart = 1,
+    MultiPartContinuation = 2,
+    SinglePart = 3,
+}
+
+const MAX_MESSAGE_SIZE = 16_000;
 
 export class Room {
     private _peers_to_join: Set<string> = new Set();
@@ -26,6 +36,7 @@ export class Room {
     private _peers: Map<string, Peer> = new Map();
     private _configuration: RoomConfiguration = {};
     private _current_room_name: String = "";
+    private outgoing_data_chunk = new Uint8Array(MAX_MESSAGE_SIZE + 5);
 
     static async setup(_configuration: RoomConfiguration): Promise<Room> {
         let room = new Room();
@@ -33,37 +44,49 @@ export class Room {
         return room;
     }
 
-    send_message(data: string | Blob | ArrayBuffer | ArrayBufferView, specific_peer?: string) {
-        if (specific_peer) {
-            this.message_specific_peer(specific_peer, data);
+    private message_peer_inner(peer: Peer, data: Uint8Array) {
+        // TODO: Verify this
+        // If the message is too large fragment it. 
+        // TODO: If there's not space in the outgoing channel push messages to an outgoing buffer.
+
+        let total_length = data.byteLength;
+
+        if (total_length > MAX_MESSAGE_SIZE) {
+            this.outgoing_data_chunk[0] = MessageType.MultiPartStart;
+            new DataView(this.outgoing_data_chunk.buffer).setUint16(1, total_length);
+
+            this.outgoing_data_chunk.set(data.subarray(0, MAX_MESSAGE_SIZE), 5);
+            peer.data_channel.send(this.outgoing_data_chunk);
+
+            let data_offset = data.subarray(MAX_MESSAGE_SIZE);
+
+            while (data_offset.byteLength > 0) {
+                length = Math.min(data_offset.byteLength, MAX_MESSAGE_SIZE);
+                this.outgoing_data_chunk[0] = MessageType.MultiPartContinuation;
+                this.outgoing_data_chunk.set(data_offset.subarray(0, length), 1);
+                data_offset = data_offset.subarray(length);
+                peer.data_channel.send(this.outgoing_data_chunk.subarray(0, length + 1));
+            }
         } else {
-            this.broadcast(data);
+            this.outgoing_data_chunk[0] = MessageType.SinglePart;
+            this.outgoing_data_chunk.set(data, 1);
+            peer.data_channel.send(this.outgoing_data_chunk.subarray(0, data.byteLength + 1));
         }
-    }
-    broadcast(data: string | Blob | ArrayBuffer | ArrayBufferView) {
-        // TODO: Fragment data if too large
-        for (let [_, peer] of this._peers) {
-            if (!peer.ready) {
-                continue;
-            }
 
-            // TODO: Figure out if there's a better way to call this without the
-            // 'as any'
-            peer.data_channel.send(data as any);
-        }
     }
 
-    message_specific_peer(peer_id: string, data: string | Blob | ArrayBuffer | ArrayBufferView) {
-        let peer = this._peers.get(peer_id);
-        if (peer) {
-            if (!peer.ready) {
-                return;
-            }
-            // TODO: Fragment data if too large
+    send_message(data: Uint8Array, peer_id?: string) {
+        if (peer_id) {
+            let peer = this._peers.get(peer_id)!;
+            this.message_peer_inner(peer, data);
+        } else {
+            for (let [_, peer] of this._peers) {
+                if (!peer.ready) {
+                    continue;
+                }
 
-            // TODO: Figure out if there's a better way to call this without the
-            // 'as any'
-            this._peers.get(peer_id)?.data_channel.send(data as any);
+                this.message_peer_inner(peer, data);
+            }
         }
     }
 
@@ -214,6 +237,11 @@ export class Room {
             console.log("[room] Connection state changed: ", peer_connection.connectionState)
         };
 
+        peer_connection.ondatachannel = (event) => {
+            let data_channel = event.channel;
+
+        };
+
         data_channel.onopen = event => {
             peer_connection.getStats(null).then((stats) => {
                 console.log("[room] DataChannel stats: ");
@@ -232,12 +260,46 @@ export class Room {
         }
 
         data_channel.onmessage = (event) => {
-            // Call the user provided callback
-            this._configuration.on_message?.(peer_id, event.data);
+            if (event.data.byteLength > 0) {
+                // Defragment the message
+                let message_data = new Uint8Array(event.data);
+                switch (message_data[0]) {
+                    case MessageType.SinglePart: {
+                        // Call the user provided callback
+                        this._configuration.on_message?.(peer_id, message_data.subarray(1));
+                        break;
+                    }
+                    case MessageType.MultiPartStart: {
+                        let data = new DataView(message_data.buffer, 1);
+                        let length = data.getUint16(0);
+
+                        let peer = this._peers.get(peer_id)!;
+                        peer.latest_message_data = new Uint8Array(length);
+                        this.multipart_data_received(peer, message_data.subarray(5));
+                        break;
+                    }
+                    case MessageType.MultiPartContinuation: {
+                        let peer = this._peers.get(peer_id)!;
+                        this.multipart_data_received(peer, message_data.subarray(1));
+                    }
+                }
+            }
         }
 
-        this._peers.set(peer_id, { connection: peer_connection, data_channel, ready: false });
+        this._peers.set(peer_id, { id: peer_id, connection: peer_connection, data_channel, ready: false, latest_message_data: new Uint8Array(0), latest_message_offset: 0 });
         return peer_connection;
+    }
+
+    private multipart_data_received(peer: Peer, data: Uint8Array) {
+        peer.latest_message_data.set(data, peer.latest_message_offset);
+        peer.latest_message_offset += data.byteLength;
+
+        if (peer.latest_message_offset == peer.latest_message_data.length) {
+            // Message received
+            this._configuration.on_message?.(peer.id, peer.latest_message_data);
+            peer.latest_message_offset = 0;
+            peer.latest_message_data = new Uint8Array(0);
+        }
     }
 
     private remove_peer(peer_id: string) {

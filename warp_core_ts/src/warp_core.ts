@@ -1,14 +1,12 @@
 import { Room, RoomState } from "./room.js";
-import { OfflineWarpCore, FunctionCall, arrayEquals } from "./offline_warp_core.js";
+import { OfflineWarpCore, TimeStamp } from "./offline_warp_core.js";
 
 export { RoomState } from "./room.js";
 
-type LoadingHeapMessage = {
-    message_type: MessageType,
-    heap_size: number,
-    current_time: number,
-    recurring_call_time: number,
-    function_calls: Array<FunctionCall>
+type FunctionCallMessage = {
+    function_name: string,
+    time_stamp: TimeStamp
+    args: Array<number>
 }
 
 enum MessageType {
@@ -24,14 +22,22 @@ type PeerData = {
     last_received_message: number,
 }
 
+let text_encoder = new TextEncoder();
+let text_decoder = new TextDecoder();
+
+enum WarpCoreState {
+    Disconnected,
+    Connected,
+    RequestingHeap
+}
+
 export class WarpCore {
     room!: Room;
     private _warp_core!: OfflineWarpCore;
-    private _loading_heap?: Uint8Array = undefined;
-    private _bytes_remaining_for_heap_load: number = 0;
-    private _loading_heap_message?: LoadingHeapMessage = undefined;
-    private _buffered_messages: Array<any> = [];
+    private _buffered_messages: Array<FunctionCallMessage> = [];
     private _peer_data: Map<string, PeerData> = new Map();
+    private outgoing_message_buffer = new Uint8Array(500);
+    private _warp_core_state = WarpCoreState.Disconnected;
 
     static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void): Promise<WarpCore> {
         let warp_core = new WarpCore();
@@ -43,35 +49,96 @@ export class WarpCore {
         // Ask an arbitrary peer for the heap
         let lowest_latency_peer = this.room.get_lowest_latency_peer();
         if (lowest_latency_peer) {
-            this.room.message_specific_peer(lowest_latency_peer, JSON.stringify({
-                message_type: MessageType.RequestHeap,
-            }));
+            this.room.send_message(this._encode_request_heap_message(), lowest_latency_peer);
         }
     }
 
-    private send_heap(specific_peer?: string) {
-        if (this._bytes_remaining_for_heap_load == 0) {
-            let memory = this._warp_core.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
-            let encoded_data = this._warp_core.gzip_encode(new Uint8Array(memory.buffer));
+    private _encode_heap_message(): Uint8Array {
+        let memory = this._warp_core.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
+        let encoded_data = this._warp_core.gzip_encode(new Uint8Array(memory.buffer));
 
-            // TODO: This could be rather large as JSON, a more efficient encoding should be used.
-            //  past_actions: actions,
-            // TODO: Also send heap reads so that this can rollback.
-            this.room.send_message(JSON.stringify({
-                message_type: MessageType.SentHeap,
-                heap_size: encoded_data.byteLength,
-                current_time: this._warp_core.current_time,
-                recurring_call_time: this._warp_core.recurring_call_time,
-                function_calls: this._warp_core.function_calls
-            }), specific_peer);
+        let heap_message = new Uint8Array(encoded_data.byteLength + 1 + 8);
+        heap_message[0] = MessageType.SentHeap;
+        let data_view = new DataView(heap_message.buffer);
+        data_view.setFloat32(1, this._warp_core.current_time);
+        data_view.setFloat32(5, this._warp_core.recurring_call_time);
+        heap_message.set(encoded_data, 9);
 
-            const HEAP_CHUNK_SIZE = 16000; // 16kb
-            for (let i = 0; i < encoded_data.byteLength; i += HEAP_CHUNK_SIZE) {
-                this.room.send_message(new Uint8Array(encoded_data).slice(i, Math.min(i + HEAP_CHUNK_SIZE, encoded_data.byteLength)), specific_peer);
-            }
-        } else {
-            console.error("Heap cannot be sent because it's not loaded yet");
+        this.room.send_message(heap_message);
+        return heap_message;
+    }
+
+    private _decode_heap_message(data: Uint8Array) {
+        let data_view = new DataView(data.buffer, data.byteOffset);
+        let current_time = data_view.getFloat32(0);
+        let recurring_call_time = data_view.getFloat32(4);
+        // TODO: When implemented all function calls and events need to be decoded here.
+
+        let heap_data = this._warp_core.gzip_decode(data.subarray(8))
+
+        return {
+            current_time,
+            recurring_call_time,
+            heap_data,
+        };
+    }
+
+    private _encode_wasm_call_message(function_string: string, time: number, time_offset: number, args: [number]): Uint8Array {
+        this.outgoing_message_buffer[0] = MessageType.WasmCall;
+        let data_view = new DataView(this.outgoing_message_buffer.buffer);
+        data_view.setFloat32(1, time);
+        data_view.setFloat32(5, time_offset);
+        this.outgoing_message_buffer[9] = args.length;
+        let offset = 10;
+
+        // Encode args. 
+        // TODO: For now all args are encoded as f32s, but that is incorrect.
+        for (let i = 0; i < args.length; i++) {
+            data_view.setFloat32(offset, args[i]);
+            offset += 4;
         }
+
+        // TODO: The set of possible functionc call names is finite per-module, so this could be
+        // turned into a simple index instead of sending the whole string.
+        offset += text_encoder.encodeInto(function_string, this.outgoing_message_buffer.subarray(offset)).written!;
+        return this.outgoing_message_buffer.subarray(0, offset);
+    }
+
+    private _decode_wasm_call_message(data: Uint8Array) {
+        let data_view = new DataView(data.buffer, data.byteOffset);
+        let time = data_view.getFloat32(0);
+        let time_offset = data_view.getFloat32(4);
+        let args_length = data[8];
+
+        let args = new Array<number>(args_length);
+        let offset = 9;
+        for (let i = 0; i < args.length; i++) {
+            args[i] = data_view.getFloat32(offset);
+            offset += 4;
+        }
+
+        let function_name = text_decoder.decode(data.subarray(offset));
+        return {
+            function_name,
+            time,
+            time_offset,
+            args
+        };
+    }
+
+    private _encode_time_progressed_message(time_progressed: number): Uint8Array {
+        this.outgoing_message_buffer[0] = MessageType.TimeProgressed;
+        new DataView(this.outgoing_message_buffer.buffer, 1).setFloat32(0, time_progressed);
+        return this.outgoing_message_buffer.subarray(0, 5);
+    }
+
+    private _decode_time_progressed_message(data: Uint8Array) {
+        return new DataView(data.buffer, data.byteOffset).getFloat32(0);
+    }
+
+    private _encode_request_heap_message(): Uint8Array {
+        this.outgoing_message_buffer[0] = MessageType.RequestHeap;
+        return this.outgoing_message_buffer.subarray(0, 1);
     }
 
     private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void) {
@@ -90,114 +157,83 @@ export class WarpCore {
 
                 console.log("[warpcore] Room state changed: ", RoomState[state]);
 
-                if (state == RoomState.Connected) {
-                    this.request_heap();
+                switch (state) {
+                    case RoomState.Connected: {
+                        this._warp_core_state = WarpCoreState.Connected;
+                        this.request_heap();
+                        break;
+                    }
+                    case RoomState.Disconnected: {
+                        this._warp_core_state = WarpCoreState.Disconnected;
+                        break;
+                    }
+                    case RoomState.Joining: {
+                        this._warp_core_state = WarpCoreState.Disconnected;
+                        break;
+                    }
                 }
 
+                // TODO: Make this callback with WarpCoreState instead.
                 on_state_change_callback?.(state);
             },
-            on_message: async (peer_id: string, message: any) => {
-                // TODO: Handle the various message types here.
-                let m = undefined;
-                try {
-                    m = JSON.parse(message);
-                } catch (e) { }
+            on_message: async (peer_id: string, message: Uint8Array) => {
+                let message_type = message[0];
+                let message_data = message.subarray(1);
 
-                if (m) {
-                    switch (m.message_type) {
-                        case (MessageType.TimeProgressed): {
-                            this._peer_data.get(peer_id)!.last_received_message = m.time;
-                            break;
-                        }
-                        case (MessageType.WasmCall): {
-                            this._peer_data.get(peer_id)!.last_received_message = m.time_stamp.time;
-
-                            if (this._bytes_remaining_for_heap_load > 0) {
-                                this._buffered_messages.push(message);
-                            } else {
-                                console.log("REMOTE CALL: ", m.function_name);
-
-                                let requires_rollback = m.time_stamp.time < this._warp_core.recurring_call_time;
-                                if (requires_rollback) {
-                                    console.log("THIS WILL REQUIRE A ROLLBACK");
-                                }
-                                // Note: If this is negative the implementation of progress_time simply does nothing.
-                                await this.progress_time(m.time_stamp.time - this._warp_core.current_time);
-
-                                // TODO: Could this be reentrant if incoming messages aren't respecting the async-ness?
-                                let _ = await this._warp_core.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
-
-                                /*
-                                let hash_after;
-                                if (this._warp_core.function_calls[new_function_call_index + 1]) {
-                                    hash_after = this._warp_core.function_calls[new_function_call_index + 1].hash_before;
-                                } else {
-                                    hash_after = this._warp_core.hash();
-                                }
-
-                                if (!arrayEquals(Object.values(m.hash_after), hash_after)) {
-                                    console.error("DESYNCED HASH!");
-                                    console.log("MESSAGE HASH: ", m.hash_after);
-                                    console.log("MY HASH: ", hash_after);
-                                } else {
-                                    if (requires_rollback) {
-                                        console.log("SUCCESSFUL ROLLBACK");
-                                    }
-                                }
-                                */
-                            }
-                            // TODO: Check if these are sent before the heap is loaded
-                            break;
-                        }
-                        case (MessageType.RequestHeap): {
-                            if (this._bytes_remaining_for_heap_load == 0) {
-                                this.send_heap(peer_id);
-                            } else {
-                                console.error("Heap requested but it's not loaded yet");
-                            }
-                            break;
-                        }
-                        case (MessageType.SentHeap): {
-                            this._peer_data.get(peer_id)!.last_received_message = m.current_time;
-
-                            // This is the start of a heap load.
-                            this._loading_heap = new Uint8Array(m.heap_size);
-                            this._bytes_remaining_for_heap_load = m.heap_size;
-                            this._loading_heap_message = m;
-                            break;
-                        }
-                        case (MessageType.SetProgram): {
-                            this._warp_core.reset_with_new_program(m.new_program);
-                        }
+                switch (message_type) {
+                    case (MessageType.TimeProgressed): {
+                        let time = this._decode_time_progressed_message(message_data);
+                        this._peer_data.get(peer_id)!.last_received_message = time;
+                        break;
                     }
-                }
-                else {
-                    // If it's not JSON it must be binary heap data.
+                    case (MessageType.WasmCall): {
+                        let m = this._decode_wasm_call_message(message_data);
+                        this._peer_data.get(peer_id)!.last_received_message = m.time;
 
-                    // TODO: Use a more robust message scheme. 
+                        let time_stamp = {
+                            time: m.time,
+                            offset: m.time_offset,
+                            player_id: 0 // TODO:
+                        };
+                        if (this._warp_core_state == WarpCoreState.RequestingHeap) {
+                            this._buffered_messages.push({
+                                function_name: m.function_name,
+                                time_stamp: time_stamp,
+                                args: m.args
+                            });
+                        } else {
+                            await this.progress_time(m.time - this._warp_core.current_time);
 
-                    let message_data = new Uint8Array(message);
-                    this._loading_heap!.set(message_data, this._loading_heap!.byteLength - this._bytes_remaining_for_heap_load);
-                    this._bytes_remaining_for_heap_load -= message_data.byteLength;
+                            // TODO: Could this be reentrant if incoming messages aren't respecting the async-ness?
+                            let _ = await this._warp_core.call_with_time_stamp(time_stamp, m.function_name, m.args);
+                        }
 
-                    if (this._bytes_remaining_for_heap_load == 0) {
-                        let decoded_heap = this._warp_core.gzip_decode(this._loading_heap!);
-                        this._loading_heap = undefined;
-
-                        // TODO: Push forward current_time based on latency and last message received time.
+                        break;
+                    }
+                    case (MessageType.RequestHeap): {
+                        let heap_message = this._encode_heap_message();
+                        this.room.send_message(heap_message);
+                        break;
+                    }
+                    case (MessageType.SentHeap): {
+                        let heap_message = this._decode_heap_message(message_data);
                         await this._warp_core.reset_with_wasm_memory(
-                            decoded_heap,
-                            this._loading_heap_message!.current_time,
-                            this._loading_heap_message!.recurring_call_time);
+                            heap_message.heap_data,
+                            heap_message.current_time,
+                            heap_message.recurring_call_time);
 
-                        // Apply all messages that were delayed due to not being loaded yet.
-                        for (message of this._buffered_messages) {
-                            await this._warp_core.call_with_time_stamp(message.time_stamp, message.function_name, message.args);
+
+                        for (let m of this._buffered_messages) {
+                            await this._warp_core.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
                         }
                         this._buffered_messages = [];
+                        break;
+                    }
+                    case (MessageType.SetProgram): {
+                        console.error("TODO: SET PROGRAM");
+                        //  this._warp_core.reset_with_new_program(m.new_program);
                     }
                 }
-
             }
         };
         this._warp_core = await OfflineWarpCore.setup(wasm_binary, wasm_imports, recurring_call_interval);
@@ -205,6 +241,7 @@ export class WarpCore {
     }
 
     async set_program(new_program: Uint8Array) {
+        /*
         // TODO: This will break if events arrive after the program is changed.
 
         await this._warp_core.reset_with_new_program(
@@ -217,43 +254,28 @@ export class WarpCore {
             message_type: MessageType.SetProgram,
             new_program: new_program
         }));
+        */
+        console.error("TODO: SET PROGRAM");
     }
 
     async call(function_name: string, args: [number]) {
-        if (this._bytes_remaining_for_heap_load == 0) {
 
-            let time_stamp = this._warp_core.next_time_stamp();
-            let new_function_call_index = await this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
+        let time_stamp = this._warp_core.next_time_stamp();
+        let new_function_call_index = await this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
 
-            /*
-            let hash = null;
-            if (this._warp_core.function_calls[new_function_call_index + 1]) {
-                hash = this._warp_core.function_calls[new_function_call_index + 1].hash_before;
-            } else {
-                hash = this._warp_core.hash();
-            }
-            */
+        // Network the call
+        this.room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, time_stamp.offset, args));
 
-            // Network the call
-            this.room.broadcast(JSON.stringify({
-                message_type: MessageType.WasmCall,
-                time_stamp: time_stamp,
-                function_name: function_name,
-                args: args,
-                //hash_after: hash,
-            }));
-
-            for (let [_, value] of this._peer_data) {
-                value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
-            }
+        for (let [_, value] of this._peer_data) {
+            value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
         }
+
     }
 
     /// This call will have no impact but can be useful to draw or query from the world.
     async call_and_revert(function_name: string, args: [number]) {
-        if (this._bytes_remaining_for_heap_load == 0) {
-            this._warp_core.call_and_revert(function_name, args);
-        }
+        this._warp_core.call_and_revert(function_name, args);
+
     }
 
     /// Resync with the room, immediately catching up.
@@ -271,7 +293,7 @@ export class WarpCore {
 
         // If we've fallen too far behind resync and catchup.
         if (steps_remaining > 20 && this._peer_data.size > 0) {
-            this.request_heap();
+            // this.request_heap();
         } else {
 
             await this._warp_core.progress_time(time_progressed);
@@ -288,10 +310,8 @@ export class WarpCore {
                 // it'd be better to figure out if those could be used instead.
                 const KEEP_ALIVE_THRESHOLD = 200;
                 if ((this._warp_core.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
-                    this.room.broadcast(JSON.stringify({
-                        message_type: MessageType.TimeProgressed,
-                        time: this._warp_core.current_time
-                    }));
+
+                    this.room.send_message(this._encode_time_progressed_message(this._warp_core.current_time));
                 }
             }
 

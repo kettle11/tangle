@@ -27,7 +27,7 @@ type GlobalSet = {
 
 type WasmAction = Store | Grow | GlobalSet;
 
-type TimeStamp = {
+export type TimeStamp = {
     time: number,
     offset: number,
     player_id: number,
@@ -357,7 +357,7 @@ export class OfflineWarpCore {
     }
 
     /// Returns the function call of this instance.
-    async call_with_time_stamp(time_stamp: TimeStamp, function_name: string, args: [number]): Promise<number> {
+    async call_with_time_stamp(time_stamp: TimeStamp, function_name: string, args: Array<number>): Promise<number> {
         // TODO: Check for a PlayerId to insert into args
         // TODO: Use a real player ID.
         let new_call_index = await this._call_inner(function_name, time_stamp, args);
