@@ -154,6 +154,19 @@ export class OfflineWarpCore {
         }
         new Uint8Array(old_memory.buffer).set(new_memory_data);
     }
+
+    async reset_with_new_program(new_program: Uint8Array) {
+        let processed_binary = await process_binary(new_program);
+        this.wasm_instance = await WebAssembly.instantiate(processed_binary, this._imports);
+
+        this._actions = [];
+        this.function_calls = [];
+
+        this.current_time = 0;
+        this.recurring_call_time = 0;
+        this.time_offset = 0;
+    }
+
     /// Restarts the WarpCore with a new memory.
     async reset_with_wasm_memory(new_memory_data: Uint8Array, current_time: number, recurring_call_time: number) {
         this.assign_memory(new_memory_data);
@@ -298,19 +311,26 @@ export class OfflineWarpCore {
             }
             actions_to_remove += function_call.actions_caused;
         }
-        let hash_before = this.hash();
+        // let hash_before = this.hash();
 
         let before = this._actions.length;
-        (this.wasm_instance?.instance.exports[function_name] as CallableFunction)(...args);
-        let after = this._actions.length;
 
-        this.function_calls.splice(i, 0, {
-            name: function_name,
-            args: args,
-            time_stamp: time_stamp,
-            // hash_before: hash_before,
-            actions_caused: after - before
-        });
+        let functon_call = this.wasm_instance?.instance.exports[function_name] as CallableFunction;
+        if (functon_call) {
+            functon_call(...args);
+
+            let after = this._actions.length;
+
+            if (after - before > 0) {
+                this.function_calls.splice(i, 0, {
+                    name: function_name,
+                    args: args,
+                    time_stamp: time_stamp,
+                    // hash_before: hash_before,
+                    actions_caused: after - before
+                });
+            }
+        }
 
         // Replay any function calls that occur after this function
         for (let j = i + 1; j < this.function_calls.length; j++) {

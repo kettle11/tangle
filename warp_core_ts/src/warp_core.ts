@@ -16,6 +16,7 @@ enum MessageType {
     RequestHeap,
     SentHeap,
     TimeProgressed,
+    SetProgram,
 }
 
 type PeerData = {
@@ -32,7 +33,7 @@ export class WarpCore {
     private _buffered_messages: Array<any> = [];
     private _peer_data: Map<string, PeerData> = new Map();
 
-    private static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void): Promise<WarpCore> {
+    static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void): Promise<WarpCore> {
         let warp_core = new WarpCore();
         await warp_core.setup_inner(wasm_binary, wasm_imports, recurring_call_interval, on_state_change_callback);
         return warp_core;
@@ -45,6 +46,31 @@ export class WarpCore {
             this.room.message_specific_peer(lowest_latency_peer, JSON.stringify({
                 message_type: MessageType.RequestHeap,
             }));
+        }
+    }
+
+    private send_heap(specific_peer?: string) {
+        if (this._bytes_remaining_for_heap_load == 0) {
+            let memory = this._warp_core.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
+            let encoded_data = this._warp_core.gzip_encode(new Uint8Array(memory.buffer));
+
+            // TODO: This could be rather large as JSON, a more efficient encoding should be used.
+            //  past_actions: actions,
+            // TODO: Also send heap reads so that this can rollback.
+            this.room.send_message(JSON.stringify({
+                message_type: MessageType.SentHeap,
+                heap_size: encoded_data.byteLength,
+                current_time: this._warp_core.current_time,
+                recurring_call_time: this._warp_core.recurring_call_time,
+                function_calls: this._warp_core.function_calls
+            }), specific_peer);
+
+            const HEAP_CHUNK_SIZE = 16000; // 16kb
+            for (let i = 0; i < encoded_data.byteLength; i += HEAP_CHUNK_SIZE) {
+                this.room.send_message(new Uint8Array(encoded_data).slice(i, Math.min(i + HEAP_CHUNK_SIZE, encoded_data.byteLength)), specific_peer);
+            }
+        } else {
+            console.error("Heap cannot be sent because it's not loaded yet");
         }
     }
 
@@ -125,24 +151,7 @@ export class WarpCore {
                         }
                         case (MessageType.RequestHeap): {
                             if (this._bytes_remaining_for_heap_load == 0) {
-                                let memory = this._warp_core.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
-                                let encoded_data = this._warp_core.gzip_encode(new Uint8Array(memory.buffer));
-
-                                // TODO: This could be rather large as JSON, a more efficient encoding should be used.
-                                //  past_actions: actions,
-                                // TODO: Also send heap reads so that this can rollback.
-                                this.room.message_specific_peer(peer_id, JSON.stringify({
-                                    message_type: MessageType.SentHeap,
-                                    heap_size: encoded_data.byteLength,
-                                    current_time: this._warp_core.current_time,
-                                    recurring_call_time: this._warp_core.recurring_call_time,
-                                    function_calls: this._warp_core.function_calls
-                                }));
-
-                                const HEAP_CHUNK_SIZE = 16000; // 16kb
-                                for (let i = 0; i < encoded_data.byteLength; i += HEAP_CHUNK_SIZE) {
-                                    this.room.message_specific_peer(peer_id, new Uint8Array(encoded_data).slice(i, Math.min(i + HEAP_CHUNK_SIZE, encoded_data.byteLength)));
-                                }
+                                this.send_heap(peer_id);
                             } else {
                                 console.error("Heap requested but it's not loaded yet");
                             }
@@ -156,6 +165,9 @@ export class WarpCore {
                             this._bytes_remaining_for_heap_load = m.heap_size;
                             this._loading_heap_message = m;
                             break;
+                        }
+                        case (MessageType.SetProgram): {
+                            this._warp_core.reset_with_new_program(m.new_program);
                         }
                     }
                 }
@@ -192,18 +204,35 @@ export class WarpCore {
         this.room = await Room.setup(room_configuration);
     }
 
+    async set_program(new_program: Uint8Array) {
+        // TODO: This will break if events arrive after the program is changed.
+
+        await this._warp_core.reset_with_new_program(
+            new_program,
+        );
+
+        // TODO: This really shouldn't be JSON.
+        // Send this new heap to all peers.
+        this.room.broadcast(JSON.stringify({
+            message_type: MessageType.SetProgram,
+            new_program: new_program
+        }));
+    }
+
     async call(function_name: string, args: [number]) {
         if (this._bytes_remaining_for_heap_load == 0) {
 
             let time_stamp = this._warp_core.next_time_stamp();
             let new_function_call_index = await this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
 
+            /*
             let hash = null;
             if (this._warp_core.function_calls[new_function_call_index + 1]) {
                 hash = this._warp_core.function_calls[new_function_call_index + 1].hash_before;
             } else {
                 hash = this._warp_core.hash();
             }
+            */
 
             // Network the call
             this.room.broadcast(JSON.stringify({
@@ -211,7 +240,7 @@ export class WarpCore {
                 time_stamp: time_stamp,
                 function_name: function_name,
                 args: args,
-                hash_after: hash,
+                //hash_after: hash,
             }));
 
             for (let [_, value] of this._peer_data) {

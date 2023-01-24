@@ -1,5 +1,6 @@
 /target
 /example_script/target/
+/text_sync/target/
 /web_example/kenney_pixelplatformer/
 /web_example/*.wasm
 /web_example/warp_core.js

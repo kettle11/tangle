@@ -33,6 +33,13 @@ export class Room {
         return room;
     }
 
+    send_message(data: string | Blob | ArrayBuffer | ArrayBufferView, specific_peer?: string) {
+        if (specific_peer) {
+            this.message_specific_peer(specific_peer, data);
+        } else {
+            this.broadcast(data);
+        }
+    }
     broadcast(data: string | Blob | ArrayBuffer | ArrayBufferView) {
         // TODO: Fragment data if too large
         for (let [_, peer] of this._peers) {

@@ -1,16 +1,203 @@
 <html>
 
+<head>
+    <style>
+        .wrapper {
+            /* Use flexbox */
+            display: flex;
+            height: 100%;
+            max-width: 100%;
+        }
+
+        .box {
+            /* Use box-sizing so that element's outerwidth will match width property */
+            box-sizing: border-box;
+
+            /* Allow box to grow and shrink, and ensure they are all equally sized */
+            flex: 1 1 auto;
+            min-width: 20%;
+        }
+
+        .handler {
+            width: 15px;
+            padding: 0;
+            cursor: ew-resize;
+            flex: 0 0 auto;
+        }
+
+        .handler::before {
+            content: '';
+            display: block;
+            height: 100%;
+            background: rgb(134, 134, 134);
+        }
+    </style>
+</head>
+
 <body>
 
     <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     </head>
 
-    <body style="margin:0; overflow-y: hidden;overflow-x: hidden; touch-action: none;">
-        <canvas id="myCanvas" style="width:100vw; height: 100vh; "></canvas>
+    <body style="margin:0; ">
+        <div class="wrapper">
+            <div class="box" ;>
+                <canvas id="myCanvas" style=" height: 100%; "></canvas>
+            </div>
+            <div class="handler"></div>
+            <div class="box" id="code_editor"></div>
+        </div>
     </body>
+    <script src="https://cdn.jsdelivr.net/npm/@monaco-editor/loader@1.3.2/lib/umd/monaco-loader.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/assemblyscript@0.26.6/dist/web.js"></script>
     <script src="warp_core.js" type="module"></script>
     <script type="module">
+        let initial_code =
+            `@external("env", "draw_circle")
+declare function draw_circle(r: u8, g: u8, b: u8, a: u8, x: f32, y: f32, radius: f32): void
+
+export function fixed_update(): void {
+
+}
+
+export function draw(): void {
+  draw_circle(255, 100, 200, 255, 100, 100, 100);
+}
+`;
+        // Handle moving code
+        {
+            var handler = document.querySelector('.handler');
+            var wrapper = handler.closest('.wrapper');
+            var boxA = wrapper.querySelector('.box');
+            var isHandlerDragging = false;
+
+            document.addEventListener('mousedown', function (e) {
+                // If mousedown event is fired from .handler, toggle flag to true
+                if (e.target === handler) {
+                    isHandlerDragging = true;
+                }
+            });
+
+            document.addEventListener('mousemove', function (e) {
+                // Don't do anything if dragging flag is false
+                if (!isHandlerDragging) {
+                    return false;
+                }
+
+                // Get offset
+                var containerOffsetLeft = wrapper.offsetLeft;
+
+                // Get x-coordinate of pointer relative to container
+                var pointerRelativeXpos = e.clientX - containerOffsetLeft;
+
+                // Arbitrary minimum width set on box A, otherwise its inner content will collapse to width of 0
+                var boxAminWidth = 40;
+
+                // Resize box A
+                // * 8px is the left/right spacing between .handler and its inner pseudo-element
+                // * Set flex-grow to 0 to prevent it from growing
+                boxA.style.width = (Math.max(boxAminWidth, pointerRelativeXpos - 8)) + 'px';
+                boxA.style.flexGrow = 0;
+            });
+
+            boxA.style.width = "50%";
+
+            document.addEventListener('mouseup', function (e) {
+                // Turn off dragging flag when user mouse is up
+                isHandlerDragging = false;
+            });
+        }
+
+        import asc from "assemblyscript/asc";
+
+        window.monaco_loader.init().then(async (monaco) => {
+
+            monaco.languages.typescript.typescriptDefaults.addExtraLib(
+                asc.definitionFiles.assembly,
+                "assemblyscript/std/assembly/index.d.ts"
+            );
+
+            monaco.editor.defineTheme('customTheme', {
+                base: 'vs-dark',
+                inherit: true,
+                rules: [
+                    { token: 'comment', foreground: 'ffa500', fontStyle: 'italic underline' },
+                    { token: 'comment.js', foreground: '008800', fontStyle: 'bold' },
+                    { token: 'comment.css', foreground: '0000ff' } // will inherit fontStyle from `comment` above
+                ],
+                colors: {
+                }
+            });
+
+            let editor = monaco.editor.create(
+                document.getElementById("code_editor"), {
+                value: initial_code,
+                language: 'typescript',
+                automaticLayout: true,
+                minimap: {
+                    enabled: false
+                },
+                theme: "customTheme"
+            });
+
+            editor.getModel().onDidChangeContent((event) => {
+                console.log("Content changed!");
+                compile_assemblyscript(editor.getValue());
+            });
+
+            compile_assemblyscript(editor.getValue());
+        });
+
+
+        function compile_assemblyscript(source) {
+            // This code is adapted from here: 
+            // https://github.com/AssemblyScript/website/blob/main/src/.vuepress/public/editor.html
+            const tsModule = 'module.ts'
+            const wasmModule = 'module.wasm'
+
+            const stdout = asc.createMemoryStream()
+            const sources = {
+                'module.ts': source
+            }
+
+            const outputs = {}
+            const config = {
+                stdout,
+                stderr: stdout,
+                readFile: name => Object.prototype.hasOwnProperty.call(sources, name) ? sources[name] : null,
+                writeFile: (name, contents) => { outputs[name] = contents },
+                listFiles: () => []
+            }
+            const options = [
+                tsModule,
+                '--outFile', wasmModule,
+                '--bindings', 'raw',
+                // ...getCompilerOptions()
+            ]
+            asc.main(options, config).then(({ error, stdout }) => {
+                let output = stdout.toString().trim()
+                if (output.length) {
+                    output = ';; ' + output.replace(/\n/g, '\n;; ') + '\n'
+                }
+                output = ';; INFO asc ' + options.join(' ') + '\n' + output
+                if (error) {
+                    console.log("Compilation error: ", error);
+                    // binaryEditor.setValue(output + `(module\n ;; FAILURE ${error.message}\n)\n`)
+                } else {
+                    console.log("OUTPUTS: ", outputs);
+                    var module_wasm = outputs[wasmModule]
+                    window.warpcore.set_program(module_wasm);
+
+                    // module_js = outputs[jsModule]
+                    // binaryEditor.setValue(output + module_wast)
+                }
+                var didCompile = true
+                // if (cb) cb(error)
+            })
+        };
+
+
         import { WarpCore, RoomState } from "./warp_core.js";
 
         async function run() {
@@ -101,12 +288,15 @@
                     animation();
                 }
             });
+            window.warpcore = warpcore;
 
             document.onkeyup = async (event) => {
 
+                /*
                 if (event.code == "KeyP") {
-                    paused = !paused;
+                    window.warpcore.set_program(wasm_binary);
                 }
+                */
 
             };
 
@@ -117,6 +307,7 @@
             };
         };
         run();
+
     </script>
 
 </body>
