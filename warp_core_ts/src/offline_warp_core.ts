@@ -399,7 +399,7 @@ export class OfflineWarpCore {
 
         let pointer = (instance.reserve_space as CallableFunction)(data_to_decode.byteLength);
         const destination = new Uint8Array(memory.buffer, pointer, data_to_decode.byteLength);
-        destination.set(new Uint8Array(data_to_decode));
+        destination.set(data_to_decode);
 
         (instance.gzip_decode as CallableFunction)();
         let result_pointer = new Uint32Array(memory.buffer, pointer, 2);

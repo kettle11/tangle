@@ -54,6 +54,8 @@ export class WarpCore {
     }
 
     private _encode_heap_message(): Uint8Array {
+        // TODO: Send all function calls and events here.
+
         let memory = this._warp_core.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
         let encoded_data = this._warp_core.gzip_encode(new Uint8Array(memory.buffer));
 
@@ -64,7 +66,6 @@ export class WarpCore {
         data_view.setFloat32(5, this._warp_core.recurring_call_time);
         heap_message.set(encoded_data, 9);
 
-        this.room.send_message(heap_message);
         return heap_message;
     }
 
@@ -72,6 +73,7 @@ export class WarpCore {
         let data_view = new DataView(data.buffer, data.byteOffset);
         let current_time = data_view.getFloat32(0);
         let recurring_call_time = data_view.getFloat32(4);
+
         // TODO: When implemented all function calls and events need to be decoded here.
 
         let heap_data = this._warp_core.gzip_decode(data.subarray(8))
@@ -81,6 +83,23 @@ export class WarpCore {
             recurring_call_time,
             heap_data,
         };
+    }
+
+
+    private _encode_new_program_message(program_data: Uint8Array): Uint8Array {
+        let encoded_data = this._warp_core.gzip_encode(program_data);
+
+        let message = new Uint8Array(encoded_data.byteLength + 1);
+        message[0] = MessageType.SetProgram;
+        message.set(encoded_data, 1);
+
+        this.room.send_message(message);
+        return message;
+    }
+
+    private _decode_new_program_message(data_in: Uint8Array) {
+        let data = this._warp_core.gzip_decode(data_in);
+        return data;
     }
 
     private _encode_wasm_call_message(function_string: string, time: number, time_offset: number, args: [number]): Uint8Array {
@@ -230,8 +249,9 @@ export class WarpCore {
                         break;
                     }
                     case (MessageType.SetProgram): {
-                        console.error("TODO: SET PROGRAM");
-                        //  this._warp_core.reset_with_new_program(m.new_program);
+                        console.log("SETTING PROGRAM!");
+                        let new_program = this._decode_new_program_message(message_data);
+                        this._warp_core.reset_with_new_program(new_program);
                     }
                 }
             }
@@ -241,25 +261,14 @@ export class WarpCore {
     }
 
     async set_program(new_program: Uint8Array) {
-        /*
-        // TODO: This will break if events arrive after the program is changed.
-
         await this._warp_core.reset_with_new_program(
             new_program,
         );
-
-        // TODO: This really shouldn't be JSON.
-        // Send this new heap to all peers.
-        this.room.broadcast(JSON.stringify({
-            message_type: MessageType.SetProgram,
-            new_program: new_program
-        }));
-        */
+        this.room.send_message(this._encode_new_program_message(new_program));
         console.error("TODO: SET PROGRAM");
     }
 
     async call(function_name: string, args: [number]) {
-
         let time_stamp = this._warp_core.next_time_stamp();
         let new_function_call_index = await this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
 
