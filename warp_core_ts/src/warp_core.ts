@@ -54,18 +54,41 @@ export class WarpCore {
         }
     }
 
+    /// This actually encodes globals as well, not just the heap.
     private _encode_heap_message(): Uint8Array {
         // TODO: Send all function calls and events here.
 
+        console.log("WASM MODULE SENDING: ", this._warp_core.wasm_instance!.instance.exports);
         let memory = this._warp_core.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
         let encoded_data = this._warp_core.gzip_encode(new Uint8Array(memory.buffer));
 
-        let heap_message = new Uint8Array(encoded_data.byteLength + 1 + 8);
+        let exports = this._warp_core.wasm_instance!.instance.exports;
+        let globals_count = 0;
+        for (const [key, v] of Object.entries(exports)) {
+            if (key.slice(0, 3) == "wg_") {
+                globals_count += 1;
+            }
+        }
+        let heap_message = new Uint8Array(encoded_data.byteLength + 1 + 8 + 4 + 8 * globals_count);
         heap_message[0] = MessageType.SentHeap;
         let data_view = new DataView(heap_message.buffer);
         data_view.setFloat32(1, this._warp_core.current_time);
         data_view.setFloat32(5, this._warp_core.recurring_call_time);
-        heap_message.set(encoded_data, 9);
+
+        // Encode all mutable globals
+
+        let offset = 11;
+        for (const [key, v] of Object.entries(exports)) {
+            if (key.slice(0, 3) == "wg_") {
+                let index = parseInt(key.match(/\d+$/)![0]);
+                console.log("GLOBAL INDEX: ", index);
+                data_view.setFloat64(offset, (v as WebAssembly.Global).value);
+                offset += 8;
+            }
+        }
+        data_view.setUint16(9, globals_count);
+
+        heap_message.set(encoded_data, offset);
 
         return heap_message;
     }
@@ -74,15 +97,25 @@ export class WarpCore {
         let data_view = new DataView(data.buffer, data.byteOffset);
         let current_time = data_view.getFloat32(0);
         let recurring_call_time = data_view.getFloat32(4);
+        let mutable_globals_length = data_view.getUint16(8);
+
+        let offset = 10;
+        let global_values = new Array(mutable_globals_length);
+        for (let i = 0; i < mutable_globals_length; i++) {
+            let value = data_view.getFloat64(offset);
+            offset += 8;
+            global_values[i] = value;
+        }
 
         // TODO: When implemented all function calls and events need to be decoded here.
 
-        let heap_data = this._warp_core.gzip_decode(data.subarray(8))
+        let heap_data = this._warp_core.gzip_decode(data.subarray(offset))
 
         return {
             current_time,
             recurring_call_time,
             heap_data,
+            global_values
         };
     }
 
@@ -243,9 +276,10 @@ export class WarpCore {
                         let heap_message = this._decode_heap_message(message_data);
                         await this._warp_core.reset_with_wasm_memory(
                             heap_message.heap_data,
+                            heap_message.global_values,
                             heap_message.current_time,
-                            heap_message.recurring_call_time);
-
+                            heap_message.recurring_call_time,
+                        );
 
                         for (let m of this._buffered_messages) {
                             await this._warp_core.call_with_time_stamp(m.time_stamp, m.function_name, m.args);

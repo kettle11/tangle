@@ -53,7 +53,7 @@ export class Room {
 
         if (total_length > MAX_MESSAGE_SIZE) {
             this.outgoing_data_chunk[0] = MessageType.MultiPartStart;
-            new DataView(this.outgoing_data_chunk.buffer).setUint16(1, total_length);
+            new DataView(this.outgoing_data_chunk.buffer).setUint32(1, total_length);
 
             this.outgoing_data_chunk.set(data.subarray(0, MAX_MESSAGE_SIZE), 5);
             peer.data_channel.send(this.outgoing_data_chunk);
@@ -271,7 +271,7 @@ export class Room {
                     }
                     case MessageType.MultiPartStart: {
                         let data = new DataView(message_data.buffer, 1);
-                        let length = data.getUint16(0);
+                        let length = data.getUint32(0);
 
                         let peer = this._peers.get(peer_id)!;
                         peer.latest_message_data = new Uint8Array(length);

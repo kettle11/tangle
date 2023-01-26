@@ -144,8 +144,18 @@ export class OfflineWarpCore {
         // Hopefully Wasm gets a better way to shrink modules in the future.
 
         if (page_diff < 0) {
+            let old_instance = this.wasm_instance!.instance;
             this.wasm_instance!.instance = await WebAssembly.instantiate(this.wasm_instance!.module, this._imports);
             page_diff = (new_memory_data.byteLength - (this.wasm_instance?.instance.exports.memory as WebAssembly.Memory).buffer.byteLength) / WASM_PAGE_SIZE;
+
+            // Copy over all globals during the resize.
+            for (const [key, v] of Object.entries(old_instance.exports)) {
+                if (key.slice(0, 3) == "wg_") {
+                    this.wasm_instance!.instance.exports[key] = v;
+                }
+            }
+
+            // Todo: Copy Wasm tables as well.
         }
 
         let old_memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
@@ -168,8 +178,13 @@ export class OfflineWarpCore {
     }
 
     /// Restarts the WarpCore with a new memory.
-    async reset_with_wasm_memory(new_memory_data: Uint8Array, current_time: number, recurring_call_time: number) {
+    async reset_with_wasm_memory(new_memory_data: Uint8Array, new_globals_data: Array<number>, current_time: number, recurring_call_time: number) {
         this.assign_memory(new_memory_data);
+
+        let exports = this.wasm_instance!.instance.exports;
+        for (let i = 0; i < new_globals_data.length; i++) {
+            (exports[`wg_global_${i}`] as WebAssembly.Global).value = new_globals_data[i];
+        }
 
         this._actions = [];
         this.function_calls = [];
@@ -222,10 +237,9 @@ export class OfflineWarpCore {
                 }
                 case WasmActionType.Grow: {
                     console.log("ROLLING BACK GROW!");
-                    // TODO: Need to copy globals / tables here as well because a new instance is being declared
-                    await this.assign_memory(new Uint8Array(memory.buffer, 0, action.old_page_count * WASM_PAGE_SIZE));
-                    memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
 
+                    await this.assign_memory(new Uint8Array(memory.buffer, 0, action.old_page_count * WASM_PAGE_SIZE));
+                    memory = this.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
 
                     // let hash = this.hash();
                     // if (!arrayEquals(hash, action.hash_before)) {
