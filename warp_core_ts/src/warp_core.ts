@@ -38,6 +38,7 @@ export class WarpCore {
     private _peer_data: Map<string, PeerData> = new Map();
     private outgoing_message_buffer = new Uint8Array(500);
     private _warp_core_state = WarpCoreState.Disconnected;
+    private _current_program_binary = new Uint8Array();
 
     static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void): Promise<WarpCore> {
         let warp_core = new WarpCore();
@@ -230,6 +231,10 @@ export class WarpCore {
                         break;
                     }
                     case (MessageType.RequestHeap): {
+                        // Also send the program binary.
+                        let program_message = this._encode_new_program_message(this._current_program_binary);
+                        this.room.send_message(program_message);
+
                         let heap_message = this._encode_heap_message();
                         this.room.send_message(heap_message);
                         break;
@@ -258,14 +263,15 @@ export class WarpCore {
         };
         this._warp_core = await OfflineWarpCore.setup(wasm_binary, wasm_imports, recurring_call_interval);
         this.room = await Room.setup(room_configuration);
+        this._current_program_binary = wasm_binary;
     }
 
     async set_program(new_program: Uint8Array) {
         await this._warp_core.reset_with_new_program(
             new_program,
         );
+        this._current_program_binary = new_program;
         this.room.send_message(this._encode_new_program_message(new_program));
-        console.error("TODO: SET PROGRAM");
     }
 
     async call(function_name: string, args: [number]) {

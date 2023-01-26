@@ -54,15 +54,30 @@
     <script src="warp_core.js" type="module"></script>
     <script type="module">
         let initial_code =
-            `@external("env", "draw_circle")
-declare function draw_circle(r: u8, g: u8, b: u8, a: u8, x: f32, y: f32, radius: f32): void
+            `@external("env", "set_color")
+declare function set_color(r: u8, g: u8, b: u8, a: u8): void
+
+@external("env", "draw_circle")
+declare function draw_circle(x: f32, y: f32, radius: f32): void
+
+let position: f32 = 0.0;
+let direction: f32 = 1.0;
 
 export function fixed_update(): void {
+    position += 1.0 * direction;
 
+    if (position > 400.0 || position < 0.0) {
+        direction *= -1.0;
+    }
+}
+
+export function pointer_down(x: u32, y: u32): void {
+    direction *= -1.0;
 }
 
 export function draw(): void {
-  draw_circle(255, 100, 200, 255, 100, 100, 100);
+    set_color(0, 0, 255, 255);
+    draw_circle(100, position, 100);
 }
 `;
         // Handle moving code
@@ -110,6 +125,7 @@ export function draw(): void {
         }
 
         import asc from "assemblyscript/asc";
+        let timeout_id;
 
         window.monaco_loader.init().then(async (monaco) => {
 
@@ -142,12 +158,20 @@ export function draw(): void {
             });
 
             editor.getModel().onDidChangeContent((event) => {
-                console.log("Content changed!");
-                compile_assemblyscript(editor.getValue());
+
+                if (timeout_id) {
+                    clearTimeout(timeout_id);
+                }
+                // I'd prefer run this in a worker instead, but it seems ASC's web compiler isn't setup for that.
+                timeout_id = setTimeout(() => {
+                    console.log("Compiling!");
+                    compile_assemblyscript(editor.getValue());
+                }, 300);
             });
 
             // compile_assemblyscript(editor.getValue());
         });
+
 
 
         function compile_assemblyscript(source) {
@@ -185,6 +209,7 @@ export function draw(): void {
                     console.log("Compilation error: ", error);
                     // binaryEditor.setValue(output + `(module\n ;; FAILURE ${error.message}\n)\n`)
                 } else {
+
                     console.log("OUTPUTS: ", outputs);
                     var module_wasm = outputs[wasmModule]
                     window.warpcore.set_program(module_wasm);
@@ -238,13 +263,15 @@ export function draw(): void {
                         // const decoded_string = decoder.decode(new Uint8Array(message_data));
                         // console.error(decoded_string);
                     },
+                    set_color: function (r, g, b, a) {
+                        context.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
+                    },
                     draw_rect: function (r, g, b, a, x, y, w, h) {
                         context.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
                         context.fillStyle =
                             context.fillRect(x, y, w, h);
                     },
-                    draw_circle: function (r, g, b, a, x, y, radius) {
-                        context.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
+                    draw_circle: function (x, y, radius) {
                         context.beginPath();
                         context.arc(x, y, radius, 0, 2 * Math.PI);
                         context.fill();
@@ -302,7 +329,8 @@ export function draw(): void {
 
             canvas.onpointerdown = async (event) => {
                 if (!paused) {
-                    await warpcore.call("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255]);
+                    await warpcore.call("pointer_down", [event.clientX, event.clientY]);
+                    // await warpcore.call("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255]);
                 }
             };
         };
