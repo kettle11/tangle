@@ -209,6 +209,7 @@ export class Room {
         // bug where some packets are dropped.
         // TODO: Report this bug.
         const data_channel = peer_connection.createDataChannel("sendChannel", { negotiated: true, id: 2, ordered: true });
+        data_channel.binaryType = "arraybuffer";
 
         peer_connection.onicecandidate = event => {
             console.log("[room] New ice candidate: ", event.candidate);
@@ -260,27 +261,30 @@ export class Room {
         }
 
         data_channel.onmessage = (event) => {
-            if (event.data.byteLength > 0) {
-                // Defragment the message
-                let message_data = new Uint8Array(event.data);
-                switch (message_data[0]) {
-                    case MessageType.SinglePart: {
-                        // Call the user provided callback
-                        this._configuration.on_message?.(peer_id, message_data.subarray(1));
-                        break;
-                    }
-                    case MessageType.MultiPartStart: {
-                        let data = new DataView(message_data.buffer, 1);
-                        let length = data.getUint32(0);
+            // First check that this peer hasn't been officially disconnected.
+            if (this._peers.get(peer_id)) {
+                if (event.data.byteLength > 0) {
+                    // Defragment the message
+                    let message_data = new Uint8Array(event.data);
+                    switch (message_data[0]) {
+                        case MessageType.SinglePart: {
+                            // Call the user provided callback
+                            this._configuration.on_message?.(peer_id, message_data.subarray(1));
+                            break;
+                        }
+                        case MessageType.MultiPartStart: {
+                            let data = new DataView(message_data.buffer, 1);
+                            let length = data.getUint32(0);
 
-                        let peer = this._peers.get(peer_id)!;
-                        peer.latest_message_data = new Uint8Array(length);
-                        this.multipart_data_received(peer, message_data.subarray(5));
-                        break;
-                    }
-                    case MessageType.MultiPartContinuation: {
-                        let peer = this._peers.get(peer_id)!;
-                        this.multipart_data_received(peer, message_data.subarray(1));
+                            let peer = this._peers.get(peer_id)!;
+                            peer.latest_message_data = new Uint8Array(length);
+                            this.multipart_data_received(peer, message_data.subarray(5));
+                            break;
+                        }
+                        case MessageType.MultiPartContinuation: {
+                            let peer = this._peers.get(peer_id)!;
+                            this.multipart_data_received(peer, message_data.subarray(1));
+                        }
                     }
                 }
             }

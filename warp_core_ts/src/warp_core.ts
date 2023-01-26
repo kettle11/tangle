@@ -39,6 +39,8 @@ export class WarpCore {
     private outgoing_message_buffer = new Uint8Array(500);
     private _warp_core_state = WarpCoreState.Disconnected;
     private _current_program_binary = new Uint8Array();
+    private _block_reentrancy = false;
+    private _enqueued_messages = new Array<Uint8Array>;
 
     static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void): Promise<WarpCore> {
         let warp_core = new WarpCore();
@@ -69,7 +71,7 @@ export class WarpCore {
                 globals_count += 1;
             }
         }
-        let heap_message = new Uint8Array(encoded_data.byteLength + 1 + 8 + 4 + 8 * globals_count);
+        let heap_message = new Uint8Array(encoded_data.byteLength + 1 + 8 + 4 + (8 + 4) * globals_count);
         heap_message[0] = MessageType.SentHeap;
         let data_view = new DataView(heap_message.buffer);
         data_view.setFloat32(1, this._warp_core.current_time);
@@ -82,6 +84,8 @@ export class WarpCore {
             if (key.slice(0, 3) == "wg_") {
                 let index = parseInt(key.match(/\d+$/)![0]);
                 console.log("GLOBAL INDEX: ", index);
+                data_view.setUint32(offset, index);
+                offset += 4;
                 data_view.setFloat64(offset, (v as WebAssembly.Global).value);
                 offset += 8;
             }
@@ -100,11 +104,13 @@ export class WarpCore {
         let mutable_globals_length = data_view.getUint16(8);
 
         let offset = 10;
-        let global_values = new Array(mutable_globals_length);
+        let global_values = new Map();
         for (let i = 0; i < mutable_globals_length; i++) {
+            let index = data_view.getUint32(offset);
+            offset += 4;
             let value = data_view.getFloat64(offset);
             offset += 8;
-            global_values[i] = value;
+            global_values.set(index, value);
         }
 
         // TODO: When implemented all function calls and events need to be decoded here.
@@ -127,7 +133,6 @@ export class WarpCore {
         message[0] = MessageType.SetProgram;
         message.set(encoded_data, 1);
 
-        this.room.send_message(message);
         return message;
     }
 
@@ -199,7 +204,7 @@ export class WarpCore {
             on_peer_joined: (peer_id: string) => {
                 this._peer_data.set(peer_id, {
                     last_sent_message: 0,
-                    last_received_message: 0,
+                    last_received_message: Number.MAX_VALUE,
                 });
             },
             on_peer_left: (peer_id: string) => {
@@ -229,70 +234,85 @@ export class WarpCore {
                 // TODO: Make this callback with WarpCoreState instead.
                 on_state_change_callback?.(state);
             },
-            on_message: async (peer_id: string, message: Uint8Array) => {
-                let message_type = message[0];
-                let message_data = message.subarray(1);
+            on_message: async (peer_id: string, message_in: Uint8Array) => {
+                this._enqueued_messages.push(message_in);
 
-                switch (message_type) {
-                    case (MessageType.TimeProgressed): {
-                        let time = this._decode_time_progressed_message(message_data);
-                        this._peer_data.get(peer_id)!.last_received_message = time;
-                        break;
-                    }
-                    case (MessageType.WasmCall): {
-                        let m = this._decode_wasm_call_message(message_data);
-                        this._peer_data.get(peer_id)!.last_received_message = m.time;
+                // Messages coming in could be reentrant because of internal awaits.
+                // TODO: Extend this to all calls into WarpCore.
+                if (this._block_reentrancy) {
+                    return;
+                }
+                this._block_reentrancy = true;
+                while (this._enqueued_messages.length > 0) {
+                    let message = this._enqueued_messages.shift()!;
+                    // TODO: Make this not reentrant.
+                    let message_type = message[0];
+                    let message_data = message.subarray(1);
 
-                        let time_stamp = {
-                            time: m.time,
-                            offset: m.time_offset,
-                            player_id: 0 // TODO:
-                        };
-                        if (this._warp_core_state == WarpCoreState.RequestingHeap) {
-                            this._buffered_messages.push({
-                                function_name: m.function_name,
-                                time_stamp: time_stamp,
-                                args: m.args
-                            });
-                        } else {
-                            await this.progress_time(m.time - this._warp_core.current_time);
-
-                            // TODO: Could this be reentrant if incoming messages aren't respecting the async-ness?
-                            let _ = await this._warp_core.call_with_time_stamp(time_stamp, m.function_name, m.args);
+                    switch (message_type) {
+                        case (MessageType.TimeProgressed): {
+                            let time = this._decode_time_progressed_message(message_data);
+                            this._peer_data.get(peer_id)!.last_received_message = time;
+                            break;
                         }
+                        case (MessageType.WasmCall): {
+                            let m = this._decode_wasm_call_message(message_data);
+                            this._peer_data.get(peer_id)!.last_received_message = m.time;
 
-                        break;
-                    }
-                    case (MessageType.RequestHeap): {
-                        // Also send the program binary.
-                        let program_message = this._encode_new_program_message(this._current_program_binary);
-                        this.room.send_message(program_message);
+                            let time_stamp = {
+                                time: m.time,
+                                offset: m.time_offset,
+                                player_id: 0 // TODO:
+                            };
+                            if (this._warp_core_state == WarpCoreState.RequestingHeap) {
+                                this._buffered_messages.push({
+                                    function_name: m.function_name,
+                                    time_stamp: time_stamp,
+                                    args: m.args
+                                });
+                            } else {
+                                await this.progress_time(m.time - this._warp_core.current_time);
 
-                        let heap_message = this._encode_heap_message();
-                        this.room.send_message(heap_message);
-                        break;
-                    }
-                    case (MessageType.SentHeap): {
-                        let heap_message = this._decode_heap_message(message_data);
-                        await this._warp_core.reset_with_wasm_memory(
-                            heap_message.heap_data,
-                            heap_message.global_values,
-                            heap_message.current_time,
-                            heap_message.recurring_call_time,
-                        );
+                                // TODO: Could this be reentrant if incoming messages aren't respecting the async-ness?
+                                let _ = await this._warp_core.call_with_time_stamp(time_stamp, m.function_name, m.args);
+                            }
 
-                        for (let m of this._buffered_messages) {
-                            await this._warp_core.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
+                            break;
                         }
-                        this._buffered_messages = [];
-                        break;
-                    }
-                    case (MessageType.SetProgram): {
-                        console.log("SETTING PROGRAM!");
-                        let new_program = this._decode_new_program_message(message_data);
-                        this._warp_core.reset_with_new_program(new_program);
+                        case (MessageType.RequestHeap): {
+                            // Also send the program binary.
+                            let program_message = this._encode_new_program_message(this._current_program_binary);
+                            this.room.send_message(program_message);
+
+                            let heap_message = this._encode_heap_message();
+                            this.room.send_message(heap_message);
+                            break;
+                        }
+                        case (MessageType.SentHeap): {
+                            let heap_message = this._decode_heap_message(message_data);
+                            await this._warp_core.reset_with_wasm_memory(
+                                heap_message.heap_data,
+                                heap_message.global_values,
+                                heap_message.current_time,
+                                heap_message.recurring_call_time,
+                            );
+
+                            for (let m of this._buffered_messages) {
+                                await this._warp_core.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
+                            }
+                            this._buffered_messages = [];
+                            break;
+                        }
+                        case (MessageType.SetProgram): {
+                            console.log("SETTING PROGRAM!");
+                            let new_program = this._decode_new_program_message(message_data);
+                            this._current_program_binary = new_program;
+                            await this._warp_core.reset_with_new_program(new_program);
+                            console.log("DONE SETTING PROGRAM");
+                        }
                     }
                 }
+                this._block_reentrancy = false;
             }
         };
         this._warp_core = await OfflineWarpCore.setup(wasm_binary, wasm_imports, recurring_call_interval);
@@ -309,6 +329,8 @@ export class WarpCore {
     }
 
     async call(function_name: string, args: [number]) {
+        // TODO: Check for reentrancy
+
         let time_stamp = this._warp_core.next_time_stamp();
         let new_function_call_index = await this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
 
@@ -323,17 +345,21 @@ export class WarpCore {
 
     /// This call will have no impact but can be useful to draw or query from the world.
     async call_and_revert(function_name: string, args: [number]) {
-        this._warp_core.call_and_revert(function_name, args);
+        // TODO: Check for reentrancy
 
+        this._warp_core.call_and_revert(function_name, args);
     }
 
     /// Resync with the room, immediately catching up.
     resync() {
+        // TODO: Check for reentrancy
         console.log("REQUESTING HEAP!");
         this.request_heap();
     }
 
     async progress_time(time_progressed: number) {
+        // TODO: Check for reentrancy
+
         // TODO: Check if too much time is being progressed and if so consider a catchup strategy
         // or consider just disconnecting and reconnecting.
         let steps_remaining = this._warp_core.steps_remaining(time_progressed);

@@ -151,7 +151,7 @@ export class OfflineWarpCore {
             // Copy over all globals during the resize.
             for (const [key, v] of Object.entries(old_instance.exports)) {
                 if (key.slice(0, 3) == "wg_") {
-                    this.wasm_instance!.instance.exports[key] = v;
+                    (this.wasm_instance!.instance.exports[key] as WebAssembly.Global).value = v;
                 }
             }
 
@@ -178,12 +178,13 @@ export class OfflineWarpCore {
     }
 
     /// Restarts the WarpCore with a new memory.
-    async reset_with_wasm_memory(new_memory_data: Uint8Array, new_globals_data: Array<number>, current_time: number, recurring_call_time: number) {
+    async reset_with_wasm_memory(new_memory_data: Uint8Array, new_globals_data: Map<number, number>, current_time: number, recurring_call_time: number) {
         this.assign_memory(new_memory_data);
 
         let exports = this.wasm_instance!.instance.exports;
-        for (let i = 0; i < new_globals_data.length; i++) {
-            (exports[`wg_global_${i}`] as WebAssembly.Global).value = new_globals_data[i];
+
+        for (const [key, value] of new_globals_data) {
+            (exports[`wg_global_${key}`] as WebAssembly.Global).value = value;
         }
 
         this._actions = [];
