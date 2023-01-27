@@ -214,6 +214,7 @@ export class OfflineWarpCore {
         this._actions.splice(0, to_remove);
 
         this.function_calls.splice(0, i);
+        console.log("ACTIONS: ", this._actions);
     }
 
 

@@ -1,5 +1,5 @@
 import { Room, RoomState } from "./room.js";
-import { OfflineWarpCore, TimeStamp } from "./offline_warp_core.js";
+import { arrayEquals, OfflineWarpCore, TimeStamp } from "./offline_warp_core.js";
 
 export { RoomState } from "./room.js";
 
@@ -83,7 +83,6 @@ export class WarpCore {
         for (const [key, v] of Object.entries(exports)) {
             if (key.slice(0, 3) == "wg_") {
                 let index = parseInt(key.match(/\d+$/)![0]);
-                console.log("GLOBAL INDEX: ", index);
                 data_view.setUint32(offset, index);
                 offset += 4;
                 data_view.setFloat64(offset, (v as WebAssembly.Global).value);
@@ -321,11 +320,13 @@ export class WarpCore {
     }
 
     async set_program(new_program: Uint8Array) {
-        await this._warp_core.reset_with_new_program(
-            new_program,
-        );
-        this._current_program_binary = new_program;
-        this.room.send_message(this._encode_new_program_message(new_program));
+        if (!arrayEquals(new_program, this._current_program_binary)) {
+            await this._warp_core.reset_with_new_program(
+                new_program,
+            );
+            this._current_program_binary = new_program;
+            this.room.send_message(this._encode_new_program_message(new_program));
+        }
     }
 
     async call(function_name: string, args: [number]) {
@@ -391,7 +392,7 @@ export class WarpCore {
             }
 
             // This - 300 is for debugging purposes only
-            this.remove_history_before(earliest_safe_memory - 300);
+            this.remove_history_before(earliest_safe_memory);
         }
     }
 

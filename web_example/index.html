@@ -40,6 +40,19 @@
             user-select: none;
             /* Standard syntax */
         }
+
+        #errors_box {
+            padding: 2rem;
+            background-color: #777777;
+            overflow: scroll;
+            max-height: 10%;
+            min-height: 10%;
+            overflow: scroll;
+            font-family: Menlo, Monaco, "Courier New";
+            font-size: 0.8rem;
+            background-color: #8b2929;
+            color: white;
+        }
     </style>
 </head>
 
@@ -55,10 +68,15 @@
                 <canvas id="myCanvas" style=" width: 100%; height: 100%; "></canvas>
             </div>
             <div class="handler unselectable"></div>
-            <div class="box" id="code_editor"></div>
+            <div class="box" style="display: flex; flex-direction: column;">
+                <div id="code_editor" style="flex-grow:1;"></div>
+                <div id="errors_box">
+                </div>
+            </div>
         </div>
     </body>
-    <script src="https://cdn.jsdelivr.net/npm/@monaco-editor/loader@1.3.2/lib/umd/monaco-loader.min.js"></script>
+    <script src=" https://cdn.jsdelivr.net/npm/@monaco-editor/loader@1.3.2/lib/umd/monaco-loader.min.js">
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/assemblyscript@0.26.6/dist/web.js"></script>
     <script src="warp_core.js" type="module"></script>
     <script type="module">
@@ -69,26 +87,106 @@ declare function set_color(r: u8, g: u8, b: u8, a: u8): void
 @external("env", "draw_circle")
 declare function draw_circle(x: f32, y: f32, radius: f32): void
 
-let position: f32 = 0.0;
-let direction: f32 = 1.0;
+const BALL_RADIUS: f32 = 30.0;
+
+let balls = new Array<Point>();
+let balls_previous = new Array<Point>();
+
+new_ball(100, 100);
+function new_ball(x: f32, y: f32): void {
+    balls.push(new Point(x, y));
+    balls_previous.push(new Point(x, y));
+}
 
 export function fixed_update(): void {
-    position += 1.0 * direction;
+    for(let i = 0; i < balls.length; ++i) {
+        // Verlet integration
+        let current = balls[i];
+        balls[i] = current.add(current.sub(balls_previous[i]));
+        balls_previous[i] = current;
 
-    if (position > 400.0 || position < 0.0) {
-        direction *= -1.0;
+        // Gravity
+        balls[i].y += 0.5;        
+    }
+
+    // Push balls apart
+    for(let i = 0; i < balls.length; ++i) {
+        for(let j = i; j < balls.length; ++j) {
+            if (i == j) continue;
+            let to_next = balls[j].sub(balls[i]);
+            let length = to_next.length();
+            if (length < BALL_RADIUS) {
+                let v = to_next.mul_scalar((1.0 / length) * BALL_RADIUS);
+                let offset = to_next.sub(v);
+
+                let o = offset.div_scalar(2);
+                balls[i] = balls[i].add(o);
+                balls[j] = balls[j].sub(o);
+            }
+        }
+   }
+
+    // Add a floor and walls
+    for(let i = 0; i < balls.length; ++i) {
+        let below_y = balls[i].y - 400;
+        if (below_y > 0) {
+            balls[i].y -= below_y;
+        }
+
+        let left = -balls[i].x;
+        if (left > 0) {
+            balls[i].x += left;
+        }
+
+        let right = balls[i].x - 400;
+        if (right > 0) {
+            balls[i].x -= right;
+        }
     }
 }
 
 export function pointer_down(x: u32, y: u32): void {
-    direction *= -1.0;
+    new_ball(x as f32, y as f32);
 }
 
 export function draw(): void {
-    set_color(0, 0, 255, 255);
-    draw_circle(100, position, 100);
+    for(let i = 0; i < balls.length; ++i) {
+        let ball = balls[i];
+        set_color(0, 0, 255, 255);
+        draw_circle(ball.x, ball.y, BALL_RADIUS / 2);
+    }
 }
-`;
+
+
+class Point {
+    x: f32;
+    y: f32;
+    
+    constructor (x: f32, y: f32) {
+        this.x = x;
+        this.y = y;
+    }
+
+    add(other: Point): Point {
+        return new Point(this.x + other.x, this.y + other.y);
+    }
+
+    sub(other: Point): Point {
+        return new Point(this.x - other.x, this.y - other.y);
+    }
+
+    div_scalar(scalar: f32): Point {
+        return new Point(this.x / scalar, this.y / scalar);
+    }
+
+    mul_scalar(scalar: f32): Point {
+        return new Point(this.x * scalar, this.y * scalar);
+    }
+
+    length(): f32 {
+        return Math.sqrt(this.x * this.x + this.y * this.y) as f32;
+    }
+}`;
         // Handle moving code
         {
             var handler = document.querySelector('.handler');
@@ -216,8 +314,18 @@ export function draw(): void {
                 output = ';; INFO asc ' + options.join(' ') + '\n' + output
                 if (error) {
                     console.log("Compilation error: ", error);
+                    console.log("Compilation error: ", error.message);
+                    console.log(output);
+
+                    let errors_box_element = document.getElementById("errors_box");
+                    errors_box_element.innerText = output;
+                    errors_box_element.style.backgroundColor = "#8b2929";
+
                     // binaryEditor.setValue(output + `(module\n ;; FAILURE ${error.message}\n)\n`)
                 } else {
+                    let errors_box_element = document.getElementById("errors_box");
+                    errors_box_element.innerText = "";
+                    errors_box_element.style.backgroundColor = "#4eda57";
 
                     console.log("OUTPUTS: ", outputs);
                     var module_wasm = outputs[wasmModule]
@@ -287,6 +395,9 @@ export function draw(): void {
                     },
                     draw_image: function (sx, sy, sw, sh, x, y, w, h) {
                         context.drawImage(image, sx, sy, 25, 25, x, y, w, h);
+                    },
+                    abort(message, fileName, lineNumber, columnNumber) {
+                        console.log("Ignoring call to abort");
                     }
                 }
             };
