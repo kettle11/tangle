@@ -455,7 +455,7 @@ class Point {
             canvas.onpointerdown = async (event) => {
                 if (!paused) {
                     await warpcore.call("pointer_down", [event.clientX, event.clientY]);
-                    // await warpcore.call("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255]);
+                    //await warpcore.call("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255]);
                 }
             };
         };

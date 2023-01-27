@@ -303,25 +303,18 @@ extern "C" fn draw() {
             let r = (user_data >> 8 * 2) as u8;
             let g = (user_data >> 8) as u8;
             let b = (user_data) as u8;
+            set_color(r, g, b, 255);
 
             match collider.1.shape().as_typed_shape() {
                 TypedShape::Ball(ball) => {
-                    draw_circle(
-                        r,
-                        g,
-                        b,
-                        255,
-                        p.x as _,
-                        p.y as _,
-                        (ball.radius / WORLD_SCALE_FACTOR) as _,
-                    );
+                    draw_circle(p.x as _, p.y as _, (ball.radius / WORLD_SCALE_FACTOR) as _);
                 }
                 TypedShape::Cuboid(c) => {
                     let aabb = c.aabb(collider.1.position());
                     let p = aabb.mins / WORLD_SCALE_FACTOR;
                     let size = (aabb.maxs - aabb.mins) / WORLD_SCALE_FACTOR;
 
-                    draw_rect(r, g, b, 255, p.x as _, p.y as _, size.x as _, size.y as _);
+                    draw_rect(p.x as _, p.y as _, size.x as _, size.y as _);
                 }
                 _ => {}
             }
@@ -330,8 +323,9 @@ extern "C" fn draw() {
 }
 
 extern "C" {
-    pub(crate) fn draw_circle(r: u8, g: u8, b: u8, a: u8, x: f32, y: f32, r: f32);
-    pub(crate) fn draw_rect(r: u8, g: u8, b: u8, a: u8, x: f32, y: f32, w: f32, h: f32);
+    pub(crate) fn set_color(r: u8, g: u8, b: u8, a: u8);
+    pub(crate) fn draw_circle(x: f32, y: f32, r: f32);
+    pub(crate) fn draw_rect(x: f32, y: f32, w: f32, h: f32);
     pub(crate) fn draw_image(sx: u32, yx: u32, sw: u32, sh: u32, x: u32, y: u32, w: u32, h: u32);
 
 }

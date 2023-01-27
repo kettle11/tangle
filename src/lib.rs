@@ -34,7 +34,18 @@ pub extern "C" fn prepare_wasm() {
     DATA_FROM_HOST.with(|d| {
         let mut d = d.borrow_mut();
 
-        let output = wasm_guardian::transform_wasm_to_track_changes(&d);
+        let output = wasm_guardian::transform_wasm_to_track_changes(&d, true, true);
+        *d = output;
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn prepare_wasm_export_globals_only() {
+    setup_panic_hook();
+    DATA_FROM_HOST.with(|d| {
+        let mut d = d.borrow_mut();
+
+        let output = wasm_guardian::transform_wasm_to_track_changes(&d, true, false);
         *d = output;
     })
 }
