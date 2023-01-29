@@ -42,9 +42,24 @@ export class WarpCore {
     private _warp_core_state = WarpCoreState.Disconnected;
     private _current_program_binary = new Uint8Array();
     private _block_reentrancy = false;
-    private _enqueued_messages = new Array<Uint8Array>;
+    private _enqueued_inner_calls = new Array(Function());
 
     private _debug_enabled = true;
+
+    private async _run_inner_function(f: Function) {
+        if (!this._block_reentrancy) {
+            this._block_reentrancy = true;
+            await f();
+            let f1 = this._enqueued_inner_calls.shift();
+            while (f1) {
+                await f1();
+                f1 = this._enqueued_inner_calls.shift();
+            }
+            this._block_reentrancy = false;
+        } else {
+            this._enqueued_inner_calls.push(f);
+        }
+    }
 
     static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void): Promise<WarpCore> {
         let warp_core = new WarpCore();
@@ -284,17 +299,8 @@ export class WarpCore {
                 // TODO: Make this callback with WarpCoreState instead.
                 on_state_change_callback?.(state);
             },
-            on_message: async (peer_id: string, message_in: Uint8Array) => {
-                this._enqueued_messages.push(message_in);
-
-                // Messages coming in could be reentrant because of internal awaits.
-                // TODO: Extend this to all calls into WarpCore.
-                if (this._block_reentrancy) {
-                    return;
-                }
-                this._block_reentrancy = true;
-                while (this._enqueued_messages.length > 0) {
-                    let message = this._enqueued_messages.shift()!;
+            on_message: async (peer_id: string, message: Uint8Array) => {
+                this._run_inner_function(async () => {
                     // TODO: Make this not reentrant.
                     let message_type = message[0];
                     let message_data = message.subarray(1);
@@ -321,7 +327,7 @@ export class WarpCore {
                                     args: m.args
                                 });
                             } else {
-                                await this.progress_time(m.time - this._warp_core.current_time);
+                                await this._progress_time_inner(m.time - this._warp_core.current_time);
 
                                 console.log("GLOBALS BEFORE REMOTE CALL: ");
                                 this._warp_core.print_globals();
@@ -409,8 +415,7 @@ export class WarpCore {
                             break;
                         }
                     }
-                }
-                this._block_reentrancy = false;
+                });
             }
         };
         this._warp_core = await OfflineWarpCore.setup(wasm_binary, wasm_imports, recurring_call_interval);
@@ -418,49 +423,48 @@ export class WarpCore {
         this._current_program_binary = wasm_binary;
     }
 
-    async set_program(new_program: Uint8Array) {
-        // TODO: Check for reentrancy 
-
-        if (!arrayEquals(new_program, this._current_program_binary)) {
-            await this._warp_core.reset_with_new_program(
-                new_program,
-            );
-            this._current_program_binary = new_program;
-            this.room.send_message(this._encode_new_program_message(new_program));
-        }
+    set_program(new_program: Uint8Array) {
+        this._run_inner_function(async () => {
+            if (!arrayEquals(new_program, this._current_program_binary)) {
+                await this._warp_core.reset_with_new_program(
+                    new_program,
+                );
+                this._current_program_binary = new_program;
+                this.room.send_message(this._encode_new_program_message(new_program));
+            }
+        });
     }
 
-    async call(function_name: string, args: [number]) {
-        // TODO: Check for reentrancy
+    call(function_name: string, args: [number]) {
+        this._run_inner_function(async () => {
+            let time_stamp = this._warp_core.next_time_stamp();
 
-        let time_stamp = this._warp_core.next_time_stamp();
+            console.log("GLOBALS BEFORE CALL: ");
+            this._warp_core.print_globals();
 
-        console.log("GLOBALS BEFORE CALL: ");
-        this._warp_core.print_globals();
+            let new_function_call_index = await this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
 
-        let new_function_call_index = await this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
+            let hash_after = this._warp_core.function_calls[new_function_call_index].hash_after;
 
-        let hash_after = this._warp_core.function_calls[new_function_call_index].hash_after;
-
-        console.log("FUNCTION CALLS: ", structuredClone(this._warp_core.function_calls));
-        console.log("HASH BEFORE SENT MESSAGE: ", this._warp_core.function_calls[new_function_call_index - 1].hash_after);
-        console.log("HASH AFTER SENT MESSAGE: ", hash_after);
+            console.log("FUNCTION CALLS: ", structuredClone(this._warp_core.function_calls));
+            console.log("HASH BEFORE SENT MESSAGE: ", this._warp_core.function_calls[new_function_call_index - 1].hash_after);
+            console.log("HASH AFTER SENT MESSAGE: ", hash_after);
 
 
-        // Network the call
-        this.room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, time_stamp.offset, args, hash_after));
+            // Network the call
+            this.room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, time_stamp.offset, args, hash_after));
 
-        for (let [_, value] of this._peer_data) {
-            value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
-        }
-
+            for (let [_, value] of this._peer_data) {
+                value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
+            }
+        });
     }
 
     /// This call will have no impact but can be useful to draw or query from the world.
-    async call_and_revert(function_name: string, args: [number]) {
-        // TODO: Check for reentrancy
-
-        this._warp_core.call_and_revert(function_name, args);
+    call_and_revert(function_name: string, args: [number]) {
+        this._run_inner_function(async () => {
+            this._warp_core.call_and_revert(function_name, args);
+        });
     }
 
     /// Resync with the room, immediately catching up.
@@ -470,7 +474,7 @@ export class WarpCore {
         this.request_heap();
     }
 
-    async progress_time(time_progressed: number) {
+    private async _progress_time_inner(time_progressed: number) {
         // TODO: Check for reentrancy
 
         // TODO: Check if too much time is being progressed and if so consider a catchup strategy
@@ -483,7 +487,6 @@ export class WarpCore {
         if (steps_remaining > 20 && this._peer_data.size > 0) {
             // this.request_heap();
         } else {
-
             await this._warp_core.progress_time(time_progressed);
 
             // Keep track of when a message was received from each peer
@@ -506,6 +509,11 @@ export class WarpCore {
             // This - 300 is for debugging purposes only
             this.remove_history_before(earliest_safe_memory - 10_000);
         }
+    }
+    progress_time(time_progressed: number) {
+        this._run_inner_function(async () => {
+            await this._progress_time_inner(time_progressed);
+        });
     }
 
     private remove_history_before(time_exclusive: number) {
