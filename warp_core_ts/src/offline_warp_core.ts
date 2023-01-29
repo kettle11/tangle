@@ -44,7 +44,7 @@ export type TimeStamp = {
     player_id: number,
 };
 
-function time_stamp_less_than(a: TimeStamp, b: TimeStamp): boolean {
+export function time_stamp_less_than(a: TimeStamp, b: TimeStamp): boolean {
     if (a.time != b.time) {
         return a.time < b.time;
     }
@@ -61,13 +61,13 @@ function time_stamp_less_than(a: TimeStamp, b: TimeStamp): boolean {
 }
 
 export type FunctionCall = {
+    hash_after?: Uint8Array,
     name: string,
     args: Array<number>,
     actions_caused: number,
     time_stamp: TimeStamp,
     // Used if the 'WasmSnapshot' RollBackStrategy is used.
-    wasm_snapshot?: WasmSnapShot
-    // hash_before: Uint8Array,
+    wasm_snapshot_before?: WasmSnapShot
 };
 
 export class OfflineWarpCore {
@@ -85,6 +85,9 @@ export class OfflineWarpCore {
     private _imports: WebAssembly.Imports = {};
 
     private _rollback_strategy: RollbackStrategy = RollbackStrategy.Granular;
+
+    // Optionally track hashes after each function call
+    hash_tracking: boolean = true;
 
     static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports, recurring_call_interval: number, rollback_strategy?: RollbackStrategy): Promise<OfflineWarpCore> {
         // TODO: Support setting the recurring call interval
@@ -115,14 +118,14 @@ export class OfflineWarpCore {
             rollback_strategy = RollbackStrategy.WasmSnapshots;
         }
 
-
         let warpcore = new OfflineWarpCore();
         warpcore._rollback_strategy = rollback_strategy;
         warpcore._recurring_call_interval = recurring_call_interval;
         warpcore._imports = imports;
 
+        wasm_binary = await process_binary(wasm_binary, true, rollback_strategy == RollbackStrategy.Granular);
+
         if (rollback_strategy == RollbackStrategy.Granular) {
-            wasm_binary = await process_binary(wasm_binary);
 
             warpcore._imports.wasm_guardian = {
                 on_store: (location: number, size: number) => {
@@ -154,6 +157,7 @@ export class OfflineWarpCore {
         }
         let wasm_instance = await WebAssembly.instantiate(wasm_binary, warpcore._imports);
 
+        console.log("HEAP SIZE: ", (wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer.byteLength);
         warpcore.wasm_instance = wasm_instance;
 
         return warpcore;
@@ -189,11 +193,11 @@ export class OfflineWarpCore {
         new Uint8Array(old_memory.buffer).set(new_memory_data);
     }
 
-    async reset_with_new_program(new_program: Uint8Array) {
-        if (this._rollback_strategy == RollbackStrategy.Granular) {
-            new_program = await process_binary(new_program);
-        }
-        this.wasm_instance = await WebAssembly.instantiate(new_program, this._imports);
+    async reset_with_new_program(wasm_binary: Uint8Array) {
+        console.log("RESETTING WITH NEW PROGRAM-----------");
+        wasm_binary = await process_binary(wasm_binary, true, this._rollback_strategy == RollbackStrategy.Granular);
+
+        this.wasm_instance = await WebAssembly.instantiate(wasm_binary, this._imports);
 
         this._actions = [];
         this.function_calls = [];
@@ -309,7 +313,7 @@ export class OfflineWarpCore {
         while ((this.current_time - this.recurring_call_time) > this._recurring_call_interval) {
             recurring_call_count += 1;
             if (recurring_call_count > MAX_RECURRING_CALLS) {
-                console.log("BREAKING DUE TO MAX RECURRING CALLS");
+                console.error("BREAKING DUE TO MAX RECURRING CALLS");
                 break;
             }
 
@@ -329,6 +333,39 @@ export class OfflineWarpCore {
         }
     }
 
+    private async _apply_snapshot(wasm_snapshot_before: WasmSnapShot) {
+        if (wasm_snapshot_before) {
+            // Apply snapshot
+            this.assign_memory(wasm_snapshot_before.memory);
+
+            let values = Object.values(this.wasm_instance!.instance.exports);
+
+            for (let j = 0; j < wasm_snapshot_before.globals.length; j++) {
+                console.log("APPLYING: ", wasm_snapshot_before.globals[j]);
+                (values[wasm_snapshot_before.globals[j][0]] as WebAssembly.Global).value = wasm_snapshot_before.globals[j][1];
+            }
+        }
+    }
+
+    private _get_wasm_snapshot(): WasmSnapShot {
+        // This could be optimized by checking ahead of time which globals need to be synced.
+        let globals = new Array();
+        let j = 0;
+        for (const [key, v] of Object.entries(this.wasm_instance!.instance.exports)) {
+            if (key.slice(0, 3) == "wg_") {
+                //  console.log("SNAP SHOT: ", [j, (v as WebAssembly.Global).value]);
+                globals.push([j, (v as WebAssembly.Global).value]);
+                j += 1;
+            }
+        }
+        return {
+            // This nested Uint8Array constructor creates a deep copy.
+            memory: new Uint8Array(new Uint8Array((this.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer)),
+            globals
+        };
+
+    }
+
     private async _call_inner(function_name: string, time_stamp: TimeStamp, args: number[]): Promise<number> {
         // Rewind any function calls that occur after this.
         let i = this.function_calls.length;
@@ -342,16 +379,9 @@ export class OfflineWarpCore {
                     await this._revert_actions(actions_to_remove);
 
                     // This will only happen if we're using the WasmSnapshot RollbackStrategy.
-                    let wasm_snapshot = this.function_calls[i].wasm_snapshot;
-                    if (wasm_snapshot) {
-                        // Apply snapshot
-                        this.assign_memory(wasm_snapshot.memory);
-
-                        let j = 0;
-                        let values = Object.values(this.wasm_instance!.instance.exports);
-                        for (let j = 0; j < wasm_snapshot.globals.length; j++) {
-                            (values[wasm_snapshot.globals[j][0]] as WebAssembly.Global).value = wasm_snapshot.globals[j][1];
-                        }
+                    let wasm_snapshot_before = this.function_calls[i].wasm_snapshot_before;
+                    if (wasm_snapshot_before) {
+                        this._apply_snapshot(wasm_snapshot_before);
                     }
                     /*
                     let hash_after_revert = this.hash();
@@ -365,41 +395,34 @@ export class OfflineWarpCore {
             }
             actions_to_remove += function_call.actions_caused;
         }
-        // let hash_before = this.hash();
 
         let before = this._actions.length;
 
         let function_call = this.wasm_instance?.instance.exports[function_name] as CallableFunction;
         if (function_call) {
+            let wasm_snapshot_before;
+            if (this._rollback_strategy == RollbackStrategy.WasmSnapshots) {
+                wasm_snapshot_before = this._get_wasm_snapshot();
+            }
+
             function_call(...args);
 
             let after = this._actions.length;
 
             if (after - before > 0 || this._rollback_strategy == RollbackStrategy.WasmSnapshots) {
-                let wasm_snapshot;
-                if (this._rollback_strategy == RollbackStrategy.WasmSnapshots) {
-                    // This could be optimized by checking ahead of time which globals need to be synced.
-                    let globals = new Array();
-                    let j = 0;
-                    for (const [key, v] of Object.entries(this.wasm_instance!.instance.exports)) {
-                        if (key.slice(0, 3) == "wg_") {
-                            globals.push([j, (v as WebAssembly.Global).value]);
-                            j += 1;
-                        }
-                    }
-                    wasm_snapshot = {
-                        // This nested Uint8Array constructor creates a deep copy.
-                        memory: new Uint8Array(new Uint8Array((this.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer)),
-                        globals
-                    };
+                let hash_after;
+
+                if (this.hash_tracking) {
+                    hash_after = this.hash();
                 }
+
                 this.function_calls.splice(i, 0, {
                     name: function_name,
                     args: args,
                     time_stamp: time_stamp,
-                    // hash_before: hash_before,
                     actions_caused: after - before,
-                    wasm_snapshot,
+                    wasm_snapshot_before,
+                    hash_after
                 });
             }
         }
@@ -407,15 +430,24 @@ export class OfflineWarpCore {
         // Replay any function calls that occur after this function
         for (let j = i + 1; j < this.function_calls.length; j++) {
             let f = this.function_calls[j];
-            //f.hash_before = this.hash();
-
             // Note: It is assumed function calls cannot be inserted with an out-of-order offset by the same peer.
             // If that were true the offset would need to be checked and potentially updated here.
 
+            let wasm_snapshot_before;
+            if (this._rollback_strategy == RollbackStrategy.WasmSnapshots) {
+                wasm_snapshot_before = this._get_wasm_snapshot();
+            }
+
             let before = this._actions.length;
             (this.wasm_instance?.instance.exports[f.name] as CallableFunction)(...f.args);
+
+            if (this.hash_tracking) {
+                f.hash_after = this.hash();
+            }
+
             let after = this._actions.length;
             f.actions_caused = after - before;
+            f.wasm_snapshot_before = wasm_snapshot_before;
         }
         return i;
     }
@@ -443,7 +475,14 @@ export class OfflineWarpCore {
     /// This can be used for things like drawing or querying from the Wasm
     async call_and_revert(function_name: string, args: [number]) {
         let before = this._actions.length;
+        let snapshot;
+        if (this._rollback_strategy == RollbackStrategy.WasmSnapshots) {
+            snapshot = this._get_wasm_snapshot();
+        }
         (this.wasm_instance?.instance.exports[function_name] as CallableFunction)(...args);
+        if (snapshot) {
+            // this._apply_snapshot(snapshot);
+        }
         let after = this._actions.length;
         await this._revert_actions(after - before);
     }
@@ -478,10 +517,16 @@ export class OfflineWarpCore {
         let result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
         return new Uint8Array(result_data);
     }
-
     hash(): Uint8Array {
         let data_to_hash = new Uint8Array((this.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer);
         return this.hash_data(data_to_hash);
+    }
+    print_globals() {
+        for (const [key, v] of Object.entries(this.wasm_instance!.instance.exports)) {
+            if (key.slice(0, 3) == "wg_") {
+                console.log("GLOBAL: ", [key, v]);
+            }
+        }
     }
     hash_data(data_to_hash: Uint8Array): Uint8Array {
         let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
@@ -497,7 +542,11 @@ export class OfflineWarpCore {
     }
 }
 /// Preprocess the binary to record all persistent state edits.
-async function process_binary(wasm_binary: Uint8Array) {
+async function process_binary(wasm_binary: Uint8Array, export_globals: boolean, track_changes: boolean) {
+    if (!(export_globals || track_changes)) {
+        return wasm_binary;
+    }
+
     let length = wasm_binary.byteLength;
     let pointer = (OfflineWarpCore._warpcore_wasm?.instance.exports.reserve_space as CallableFunction)(length);
 
@@ -505,7 +554,7 @@ async function process_binary(wasm_binary: Uint8Array) {
 
     const data_location = new Uint8Array(memory.buffer, pointer, length);
     data_location.set(new Uint8Array(wasm_binary));
-    (OfflineWarpCore._warpcore_wasm?.instance.exports.prepare_wasm as CallableFunction)();
+    (OfflineWarpCore._warpcore_wasm?.instance.exports.prepare_wasm as CallableFunction)(export_globals, track_changes);
 
     // TODO: Write these to an output buffer instead of having two calls for them.
     let output_ptr = (OfflineWarpCore._warpcore_wasm?.instance.exports.get_output_ptr as CallableFunction)();

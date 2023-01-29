@@ -29,23 +29,13 @@ pub extern "C" fn reserve_space(space: usize) -> *mut u8 {
 }
 
 #[no_mangle]
-pub extern "C" fn prepare_wasm() {
+pub extern "C" fn prepare_wasm(export_globals: bool, track_changes: bool) {
     setup_panic_hook();
     DATA_FROM_HOST.with(|d| {
         let mut d = d.borrow_mut();
 
-        let output = wasm_guardian::transform_wasm_to_track_changes(&d, true, true);
-        *d = output;
-    })
-}
-
-#[no_mangle]
-pub extern "C" fn prepare_wasm_export_globals_only() {
-    setup_panic_hook();
-    DATA_FROM_HOST.with(|d| {
-        let mut d = d.borrow_mut();
-
-        let output = wasm_guardian::transform_wasm_to_track_changes(&d, true, false);
+        let output =
+            wasm_guardian::transform_wasm_to_track_changes(&d, export_globals, track_changes);
         *d = output;
     })
 }
