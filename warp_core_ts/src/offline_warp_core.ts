@@ -198,7 +198,6 @@ export class OfflineWarpCore {
 
         wasm_binary = await process_binary(wasm_binary, true, this._rollback_strategy == RollbackStrategy.Granular);
 
-        console.log("IMPORTS: ", this._imports);
         this.wasm_instance = await WebAssembly.instantiate(wasm_binary, this._imports);
         console.log("BINARY HASH: ", this.hash_data(wasm_binary));
 
@@ -208,11 +207,6 @@ export class OfflineWarpCore {
         this.current_time = 0;
         this.recurring_call_time = 0;
         this.time_offset = 0;
-
-        console.log("INITIAL GLOBALS: ");
-
-        this.print_globals();
-        console.log("SET PROGRAM COMPLETE!!!");
     }
 
     /// Restarts the WarpCore with a new memory.
@@ -222,7 +216,6 @@ export class OfflineWarpCore {
         let exports = this.wasm_instance!.instance.exports;
 
         for (const [key, value] of new_globals_data) {
-            console.log("ASSIGNING GLOBAL: %d, %f", key, value);
             (exports[`wg_global_${key}`] as WebAssembly.Global).value = value;
         }
 
@@ -531,6 +524,7 @@ export class OfflineWarpCore {
         let data_to_hash = new Uint8Array((this.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer);
         return this.hash_data(data_to_hash);
     }
+    /*
     print_globals() {
         for (const [key, v] of Object.entries(this.wasm_instance!.instance.exports)) {
             if (key.slice(0, 3) == "wg_") {
@@ -538,6 +532,7 @@ export class OfflineWarpCore {
             }
         }
     }
+    */
     hash_data(data_to_hash: Uint8Array): Uint8Array {
         let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
         let instance = OfflineWarpCore._warpcore_wasm!.instance.exports;

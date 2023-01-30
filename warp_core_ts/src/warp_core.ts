@@ -101,7 +101,6 @@ export class WarpCore {
         for (const [key, v] of Object.entries(exports)) {
             if (key.slice(0, 3) == "wg_") {
                 let index = parseInt(key.match(/\d+$/)![0]);
-                console.log("ENCODING GLOBAL: %d %f", index, (v as WebAssembly.Global).value);
                 message_writer.write_u32(index);
                 message_writer.write_f64((v as WebAssembly.Global).value);
             }
@@ -331,9 +330,6 @@ export class WarpCore {
                             } else {
                                 await this._progress_time_inner(m.time - this._warp_core.current_time);
 
-                                console.log("GLOBALS BEFORE REMOTE CALL: ");
-                                this._warp_core.print_globals();
-
                                 // TODO: Could this be reentrant if incoming messages aren't respecting the async-ness?
                                 let index = await this._warp_core.call_with_time_stamp(time_stamp, m.function_name, m.args);
 
@@ -342,12 +338,12 @@ export class WarpCore {
                                 if (m.hash && !arrayEquals(m.hash, hash_after!)) {
                                     console.log("DESYNC DETECTED! SENDING HISTORY");
                                     this.room.send_message(this._encode_share_history(), peer_id);
-                                }
 
-                                console.log("FUNCTION CALLS: ", structuredClone(this._warp_core.function_calls));
-                                console.log("EXPECTED HASH AFTER: ", m.hash);
-                                console.log("HASH BEFORE REMOTE CALL: ", this._warp_core.function_calls[index - 1].hash_after);
-                                console.log("HASH AFTER REMOTE CALL: ", hash_after);
+                                    console.log("FUNCTION CALLS: ", structuredClone(this._warp_core.function_calls));
+                                    console.log("EXPECTED HASH AFTER: ", m.hash);
+                                    console.log("HASH BEFORE REMOTE CALL: ", this._warp_core.function_calls[index - 1].hash_after);
+                                    console.log("HASH AFTER REMOTE CALL: ", hash_after);
+                                }
                             }
 
                             break;
@@ -443,17 +439,9 @@ export class WarpCore {
         this._run_inner_function(async () => {
             let time_stamp = this._warp_core.next_time_stamp();
 
-            console.log("GLOBALS BEFORE CALL: ");
-            this._warp_core.print_globals();
-
             let new_function_call_index = await this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
 
             let hash_after = this._warp_core.function_calls[new_function_call_index].hash_after;
-
-            console.log("FUNCTION CALLS: ", structuredClone(this._warp_core.function_calls));
-            console.log("HASH BEFORE SENT MESSAGE: ", this._warp_core.function_calls[new_function_call_index - 1].hash_after);
-            console.log("HASH AFTER SENT MESSAGE: ", hash_after);
-
 
             // Network the call
             this.room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, time_stamp.offset, args, hash_after));

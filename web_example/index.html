@@ -399,6 +399,10 @@ class Point {
                     },
                     abort(message, fileName, lineNumber, columnNumber) {
                         console.log("Ignoring call to abort");
+                    },
+                    seed() {
+                        // This is a good random number.
+                        return 14;
                     }
                 }
             };
