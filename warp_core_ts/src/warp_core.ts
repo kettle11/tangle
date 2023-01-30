@@ -46,8 +46,8 @@ export class WarpCore {
 
     private _debug_enabled = true;
 
-    private async _run_inner_function(f: Function) {
-        if (!this._block_reentrancy) {
+    private async _run_inner_function(f: Function, enqueue_condition: boolean = false) {
+        if (!this._block_reentrancy && !enqueue_condition) {
             this._block_reentrancy = true;
             await f();
             let f1 = this._enqueued_inner_calls.shift();
@@ -101,6 +101,7 @@ export class WarpCore {
         for (const [key, v] of Object.entries(exports)) {
             if (key.slice(0, 3) == "wg_") {
                 let index = parseInt(key.match(/\d+$/)![0]);
+                console.log("ENCODING GLOBAL: %d %f", index, (v as WebAssembly.Global).value);
                 message_writer.write_u32(index);
                 message_writer.write_f64((v as WebAssembly.Global).value);
             }
@@ -300,8 +301,9 @@ export class WarpCore {
                 on_state_change_callback?.(state);
             },
             on_message: async (peer_id: string, message: Uint8Array) => {
+                let peer_connected_already = this._peer_data.get(peer_id);
+
                 this._run_inner_function(async () => {
-                    // TODO: Make this not reentrant.
                     let message_type = message[0];
                     let message_data = message.subarray(1);
 
@@ -415,7 +417,7 @@ export class WarpCore {
                             break;
                         }
                     }
-                });
+                }, !peer_connected_already);
             }
         };
         this._warp_core = await OfflineWarpCore.setup(wasm_binary, wasm_imports, recurring_call_interval);
@@ -425,13 +427,15 @@ export class WarpCore {
 
     set_program(new_program: Uint8Array) {
         this._run_inner_function(async () => {
-            if (!arrayEquals(new_program, this._current_program_binary)) {
-                await this._warp_core.reset_with_new_program(
-                    new_program,
-                );
-                this._current_program_binary = new_program;
-                this.room.send_message(this._encode_new_program_message(new_program));
-            }
+            //   if (!arrayEquals(new_program, this._current_program_binary)) {
+            await this._warp_core.reset_with_new_program(
+                new_program,
+            );
+            this._current_program_binary = new_program;
+
+            console.log("SENDING NEW PROGRAM MESSAGE!");
+            this.room.send_message(this._encode_new_program_message(new_program));
+            // }
         });
     }
 

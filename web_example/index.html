@@ -234,6 +234,7 @@ class Point {
         import asc from "assemblyscript/asc";
         let timeout_id;
 
+        var editor;
         window.monaco_loader.init().then(async (monaco) => {
 
             monaco.languages.typescript.typescriptDefaults.addExtraLib(
@@ -253,7 +254,7 @@ class Point {
                 }
             });
 
-            let editor = monaco.editor.create(
+            editor = monaco.editor.create(
                 document.getElementById("code_editor"), {
                 value: initial_code,
                 language: 'typescript',
@@ -446,7 +447,8 @@ class Point {
 
 
                 if (event.code == "KeyH") {
-                    window.warpcore.share_history();
+                    // window.warpcore.share_history();
+                    compile_assemblyscript(editor.getValue());
                 }
 
 

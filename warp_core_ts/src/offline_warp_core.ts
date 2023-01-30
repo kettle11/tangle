@@ -195,9 +195,12 @@ export class OfflineWarpCore {
 
     async reset_with_new_program(wasm_binary: Uint8Array) {
         console.log("RESETTING WITH NEW PROGRAM-----------");
+
         wasm_binary = await process_binary(wasm_binary, true, this._rollback_strategy == RollbackStrategy.Granular);
 
+        console.log("IMPORTS: ", this._imports);
         this.wasm_instance = await WebAssembly.instantiate(wasm_binary, this._imports);
+        console.log("BINARY HASH: ", this.hash_data(wasm_binary));
 
         this._actions = [];
         this.function_calls = [];
@@ -205,6 +208,11 @@ export class OfflineWarpCore {
         this.current_time = 0;
         this.recurring_call_time = 0;
         this.time_offset = 0;
+
+        console.log("INITIAL GLOBALS: ");
+
+        this.print_globals();
+        console.log("SET PROGRAM COMPLETE!!!");
     }
 
     /// Restarts the WarpCore with a new memory.
@@ -214,6 +222,7 @@ export class OfflineWarpCore {
         let exports = this.wasm_instance!.instance.exports;
 
         for (const [key, value] of new_globals_data) {
+            console.log("ASSIGNING GLOBAL: %d, %f", key, value);
             (exports[`wg_global_${key}`] as WebAssembly.Global).value = value;
         }
 
@@ -344,6 +353,7 @@ export class OfflineWarpCore {
                 console.log("APPLYING: ", wasm_snapshot_before.globals[j]);
                 (values[wasm_snapshot_before.globals[j][0]] as WebAssembly.Global).value = wasm_snapshot_before.globals[j][1];
             }
+            console.log!("HERE");
         }
     }
 
@@ -355,8 +365,8 @@ export class OfflineWarpCore {
             if (key.slice(0, 3) == "wg_") {
                 //  console.log("SNAP SHOT: ", [j, (v as WebAssembly.Global).value]);
                 globals.push([j, (v as WebAssembly.Global).value]);
-                j += 1;
             }
+            j += 1;
         }
         return {
             // This nested Uint8Array constructor creates a deep copy.
@@ -524,7 +534,7 @@ export class OfflineWarpCore {
     print_globals() {
         for (const [key, v] of Object.entries(this.wasm_instance!.instance.exports)) {
             if (key.slice(0, 3) == "wg_") {
-                console.log("GLOBAL: ", [key, v]);
+                console.log("GLOBAL: ", [key, v.value]);
             }
         }
     }
