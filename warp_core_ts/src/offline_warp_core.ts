@@ -90,8 +90,6 @@ export class OfflineWarpCore {
     hash_tracking: boolean = true;
 
     static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports, recurring_call_interval: number, rollback_strategy?: RollbackStrategy): Promise<OfflineWarpCore> {
-        // TODO: Support setting the recurring call interval
-
         let decoder = new TextDecoder();
 
         let imports_warp_core_wasm: WebAssembly.Imports = {
@@ -193,7 +191,7 @@ export class OfflineWarpCore {
         new Uint8Array(old_memory.buffer).set(new_memory_data);
     }
 
-    async reset_with_new_program(wasm_binary: Uint8Array) {
+    async reset_with_new_program(wasm_binary: Uint8Array, current_time: number,) {
         console.log("RESETTING WITH NEW PROGRAM-----------");
 
         wasm_binary = await process_binary(wasm_binary, true, this._rollback_strategy == RollbackStrategy.Granular);
@@ -204,7 +202,8 @@ export class OfflineWarpCore {
         this._actions = [];
         this.function_calls = [];
 
-        this.current_time = 0;
+        // TODO: It might be better to not reset time here.
+        this.current_time = current_time;
         this.recurring_call_time = 0;
         this.time_offset = 0;
     }
@@ -245,7 +244,8 @@ export class OfflineWarpCore {
         // Remove all actions that occurred before this.
         this._actions.splice(0, to_remove);
 
-        this.function_calls.splice(0, i);
+        // Always leave one function call for debugging purposes.
+        this.function_calls.splice(0, i - 1);
         //console.log("ACTIONS: ", this._actions);
     }
 
@@ -313,11 +313,13 @@ export class OfflineWarpCore {
         // Trigger all of the recurring calls.
         // TODO: Check if recurring call interval is defined at all.
         while ((this.current_time - this.recurring_call_time) > this._recurring_call_interval) {
+            /*
             recurring_call_count += 1;
             if (recurring_call_count > MAX_RECURRING_CALLS) {
                 console.error("BREAKING DUE TO MAX RECURRING CALLS");
                 break;
             }
+            */
 
             this.time_offset = 0;
             this.recurring_call_time += this._recurring_call_interval;
@@ -343,10 +345,8 @@ export class OfflineWarpCore {
             let values = Object.values(this.wasm_instance!.instance.exports);
 
             for (let j = 0; j < wasm_snapshot_before.globals.length; j++) {
-                console.log("APPLYING: ", wasm_snapshot_before.globals[j]);
                 (values[wasm_snapshot_before.globals[j][0]] as WebAssembly.Global).value = wasm_snapshot_before.globals[j][1];
             }
-            console.log!("HERE");
         }
     }
 
@@ -370,6 +370,12 @@ export class OfflineWarpCore {
     }
 
     private async _call_inner(function_name: string, time_stamp: TimeStamp, args: number[]): Promise<number> {
+        // If this function does not exist don't bother calling it.
+        if (!this.wasm_instance?.instance.exports[function_name]) {
+            // TODO: Returning 0 isn't correct
+            return 0;
+        }
+
         // Rewind any function calls that occur after this.
         let i = this.function_calls.length;
         let actions_to_remove = 0;

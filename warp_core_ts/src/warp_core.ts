@@ -17,6 +17,9 @@ enum MessageType {
     TimeProgressed,
     SetProgram,
     DebugShareHistory,
+    // Used to figure out roundtrip time.
+    BounceBack,
+    BounceBackReturn
 }
 
 type PeerData = {
@@ -33,6 +36,9 @@ enum WarpCoreState {
     RequestingHeap
 }
 
+let round_trip_time_total = 0;
+let round_trip_time_average_count = 0;
+
 export class WarpCore {
     room!: Room;
     private _warp_core!: OfflineWarpCore;
@@ -43,8 +49,10 @@ export class WarpCore {
     private _current_program_binary = new Uint8Array();
     private _block_reentrancy = false;
     private _enqueued_inner_calls = new Array(Function());
-
     private _debug_enabled = true;
+
+    // The simulation's time - Date.now()
+    private _time_offset = 0;
 
     private async _run_inner_function(f: Function, enqueue_condition: boolean = false) {
         if (!this._block_reentrancy && !enqueue_condition) {
@@ -71,6 +79,7 @@ export class WarpCore {
         // Ask an arbitrary peer for the heap
         let lowest_latency_peer = this.room.get_lowest_latency_peer();
         if (lowest_latency_peer) {
+            this.room.send_message(this._encode_bounce_back_message(), lowest_latency_peer);
             this.room.send_message(this._encode_request_heap_message(), lowest_latency_peer);
         }
     }
@@ -95,6 +104,7 @@ export class WarpCore {
         message_writer.write_u8(MessageType.SentHeap);
         message_writer.write_f64(this._warp_core.current_time);
         message_writer.write_f64(this._warp_core.recurring_call_time);
+        console.log("ENCODING RECURRING CALL TIME: ", this._warp_core.recurring_call_time);
 
         // Encode all mutable globals
         message_writer.write_u16(globals_count);
@@ -112,7 +122,6 @@ export class WarpCore {
 
     private _decode_heap_message(data: Uint8Array) {
         let message_reader = new MessageWriterReader(data);
-
 
         let current_time = message_reader.read_f64();
         let recurring_call_time = message_reader.read_f64();
@@ -219,6 +228,18 @@ export class WarpCore {
     private _encode_request_heap_message(): Uint8Array {
         this.outgoing_message_buffer[0] = MessageType.RequestHeap;
         return this.outgoing_message_buffer.subarray(0, 1);
+    }
+
+    private _encode_bounce_back_message(): Uint8Array {
+        let writer = new MessageWriterReader(this.outgoing_message_buffer);
+        writer.write_u8(MessageType.BounceBack);
+        writer.write_f64(Date.now());
+        return writer.get_result_array();
+    }
+
+    private _decode_bounce_back_return(data: Uint8Array): number {
+        let reader = new MessageWriterReader(data);
+        return reader.read_f64();
     }
 
     private _encode_share_history(): Uint8Array {
@@ -336,7 +357,7 @@ export class WarpCore {
                                 let hash_after = this._warp_core.function_calls[index].hash_after;
 
                                 if (m.hash && !arrayEquals(m.hash, hash_after!)) {
-                                    console.log("DESYNC DETECTED! SENDING HISTORY");
+                                    console.error("DESYNC DETECTED! SENDING HISTORY");
                                     this.room.send_message(this._encode_share_history(), peer_id);
 
                                     console.log("FUNCTION CALLS: ", structuredClone(this._warp_core.function_calls));
@@ -358,11 +379,22 @@ export class WarpCore {
                             break;
                         }
                         case (MessageType.SentHeap): {
+                            console.log("[warpcore] Setting heap");
                             let heap_message = this._decode_heap_message(message_data);
+
+                            // TODO: Get roundtrip time to peer and increase current_time by half of that.
+                            let round_trip_average = round_trip_time_total / round_trip_time_average_count;
+                            console.log("[warpcore] Approximate round trip offset: ", round_trip_average);
+
+                            let current_time = heap_message.current_time;
+
+                            this._time_offset = (Date.now() - heap_message.current_time);
+
+                            console.log("INITIAL RECURRING CALL TIME: ", heap_message.recurring_call_time);
                             await this._warp_core.reset_with_wasm_memory(
                                 heap_message.heap_data,
                                 heap_message.global_values,
-                                heap_message.current_time,
+                                current_time + (round_trip_average / 2),
                                 heap_message.recurring_call_time,
                             );
 
@@ -373,10 +405,18 @@ export class WarpCore {
                             break;
                         }
                         case (MessageType.SetProgram): {
+                            // TODO: This is incorrect. Make sure all peers are aware of their roundtrip average with each-other
+                            let round_trip_average = 0;
+                            if (round_trip_time_average_count != 0) {
+                                round_trip_average = round_trip_time_total / round_trip_time_average_count;
+
+                            }
+                            console.log("[warpcore] Approximate round trip offset: ", round_trip_average);
+
                             console.log("SETTING PROGRAM!");
                             let new_program = this._decode_new_program_message(message_data);
                             this._current_program_binary = new_program;
-                            await this._warp_core.reset_with_new_program(new_program);
+                            await this._warp_core.reset_with_new_program(new_program, round_trip_average);
                             console.log("DONE SETTING PROGRAM");
                             break;
                         }
@@ -412,6 +452,17 @@ export class WarpCore {
                             }
                             break;
                         }
+                        case (MessageType.BounceBack): {
+                            message[0] = MessageType.BounceBackReturn;
+                            this.room.send_message(message, peer_id);
+                            break;
+                        }
+                        case (MessageType.BounceBackReturn): {
+                            let time = this._decode_bounce_back_return(message_data);
+                            round_trip_time_total += Date.now() - time;
+                            round_trip_time_average_count += 1;
+                            break;
+                        }
                     }
                 }, !peer_connected_already);
             }
@@ -426,6 +477,7 @@ export class WarpCore {
             //   if (!arrayEquals(new_program, this._current_program_binary)) {
             await this._warp_core.reset_with_new_program(
                 new_program,
+                0
             );
             this._current_program_binary = new_program;
 
@@ -475,41 +527,34 @@ export class WarpCore {
 
         // TODO: Detect if we're falling behind and can't keep up.
 
-        // If we've fallen too far behind resync and catchup.
-        if (steps_remaining > 20 && this._peer_data.size > 0) {
-            // this.request_heap();
-        } else {
-            await this._warp_core.progress_time(time_progressed);
 
-            // Keep track of when a message was received from each peer
-            // and use that to determine what history is safe to throw away.
-            let earliest_safe_memory = this._warp_core.recurring_call_time;
-            for (let [_, value] of this._peer_data) {
-                earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
+        await this._warp_core.progress_time(time_progressed);
 
-                // If we haven't message our peers in a while send them a message
-                // This lets them know nothing has happened and they can clear memory.
-                // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
-                // it'd be better to figure out if those could be used instead.
-                const KEEP_ALIVE_THRESHOLD = 200;
-                if ((this._warp_core.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
+        // Keep track of when a message was received from each peer
+        // and use that to determine what history is safe to throw away.
+        let earliest_safe_memory = this._warp_core.recurring_call_time;
+        for (let [_, value] of this._peer_data) {
+            earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
 
-                    this.room.send_message(this._encode_time_progressed_message(this._warp_core.current_time));
-                }
+            // If we haven't message our peers in a while send them a message
+            // This lets them know nothing has happened and they can clear memory.
+            // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
+            // it'd be better to figure out if those could be used instead.
+            const KEEP_ALIVE_THRESHOLD = 200;
+            if ((this._warp_core.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
+
+                this.room.send_message(this._encode_time_progressed_message(this._warp_core.current_time));
             }
-
-            // This - 300 is for debugging purposes only
-            this.remove_history_before(earliest_safe_memory - 10_000);
         }
+
+        // This -100 is for debugging purposes only
+        this._warp_core.remove_history_before(earliest_safe_memory - 100);
+
     }
     progress_time(time_progressed: number) {
         this._run_inner_function(async () => {
             await this._progress_time_inner(time_progressed);
         });
-    }
-
-    private remove_history_before(time_exclusive: number) {
-        this._warp_core.remove_history_before(time_exclusive);
     }
 
     share_history() {

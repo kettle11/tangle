@@ -37,6 +37,7 @@ export class Room {
     private _configuration: RoomConfiguration = {};
     private _current_room_name: String = "";
     private outgoing_data_chunk = new Uint8Array(MAX_MESSAGE_SIZE + 5);
+    private _artificial_delay = 0;
 
     static async setup(_configuration: RoomConfiguration): Promise<Room> {
         let room = new Room();
@@ -244,20 +245,31 @@ export class Room {
         };
 
         data_channel.onopen = event => {
-            peer_connection.getStats(null).then((stats) => {
+            this._peers_to_join.delete(peer_id);
+
+            this._peers.get(peer_id)!.ready = true;
+            this._configuration.on_peer_joined?.(peer_id);
+            this.check_if_joined();
+
+            /*
+            peer_connection.getStats().then((stats) => {
+
                 console.log("[room] DataChannel stats: ");
                 console.log(stats);
                 stats.forEach((report) => {
+                    //  console.log("REPORT: %s ", report.type, report);
                     if (report.type === "candidate-pair") {
                         console.log("[room] Round trip seconds to _peers: %s : %s", peer_id, report.currentRoundTripTime);
                     }
                 });
+
                 this._peers_to_join.delete(peer_id);
 
                 this._peers.get(peer_id)!.ready = true;
                 this._configuration.on_peer_joined?.(peer_id);
                 this.check_if_joined();
             });
+            */
         }
 
         data_channel.onmessage = (event) => {
@@ -269,7 +281,9 @@ export class Room {
                     switch (message_data[0]) {
                         case MessageType.SinglePart: {
                             // Call the user provided callback
-                            this._configuration.on_message?.(peer_id, message_data.subarray(1));
+                            setTimeout(() => {
+                                this._configuration.on_message?.(peer_id, message_data.subarray(1));
+                            }, this._artificial_delay);
                             break;
                         }
                         case MessageType.MultiPartStart: {
@@ -300,7 +314,9 @@ export class Room {
 
         if (peer.latest_message_offset == peer.latest_message_data.length) {
             // Message received
-            this._configuration.on_message?.(peer.id, peer.latest_message_data);
+            setTimeout(() => {
+                this._configuration.on_message?.(peer.id, peer.latest_message_data);
+            }, this._artificial_delay);
             peer.latest_message_offset = 0;
             peer.latest_message_data = new Uint8Array(0);
         }
