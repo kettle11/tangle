@@ -25,6 +25,7 @@ enum MessageType {
 type PeerData = {
     last_sent_message: number,
     last_received_message: number,
+    round_trip_time: number,
 }
 
 let text_encoder = new TextEncoder();
@@ -288,42 +289,58 @@ export class WarpCore {
     private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void) {
         let room_configuration = {
             on_peer_joined: (peer_id: string) => {
-                this._peer_data.set(peer_id, {
-                    last_sent_message: 0,
-                    last_received_message: Number.MAX_VALUE,
+                this._run_inner_function(async () => {
+                    this._peer_data.set(peer_id, {
+                        last_sent_message: 0,
+                        last_received_message: Number.MAX_VALUE,
+                        round_trip_time: 0,
+                    });
+                    this.room.send_message(this._encode_bounce_back_message(), peer_id);
                 });
             },
             on_peer_left: (peer_id: string) => {
-                this._peer_data.delete(peer_id);
+                this._run_inner_function(async () => {
+                    console.log("REMOVE PEER");
+                    this._peer_data.delete(peer_id);
+                });
             },
             on_state_change: (state: RoomState) => {
-                // TODO: Change this callback to have room passed in.
+                this._run_inner_function(async () => {
+                    // TODO: Change this callback to have room passed in.
 
-                console.log("[warpcore] Room state changed: ", RoomState[state]);
+                    console.log("[warpcore] Room state changed: ", RoomState[state]);
 
-                switch (state) {
-                    case RoomState.Connected: {
-                        this._warp_core_state = WarpCoreState.Connected;
-                        this.request_heap();
-                        break;
+                    switch (state) {
+                        case RoomState.Connected: {
+                            this._warp_core_state = WarpCoreState.Connected;
+                            this.request_heap();
+                            break;
+                        }
+                        case RoomState.Disconnected: {
+                            this._warp_core_state = WarpCoreState.Disconnected;
+                            break;
+                        }
+                        case RoomState.Joining: {
+                            this._warp_core_state = WarpCoreState.Disconnected;
+                            break;
+                        }
                     }
-                    case RoomState.Disconnected: {
-                        this._warp_core_state = WarpCoreState.Disconnected;
-                        break;
-                    }
-                    case RoomState.Joining: {
-                        this._warp_core_state = WarpCoreState.Disconnected;
-                        break;
-                    }
-                }
 
-                // TODO: Make this callback with WarpCoreState instead.
-                on_state_change_callback?.(state);
+                    // TODO: Make this callback with WarpCoreState instead.
+                    on_state_change_callback?.(state);
+                });
             },
             on_message: async (peer_id: string, message: Uint8Array) => {
                 let peer_connected_already = this._peer_data.get(peer_id);
 
                 this._run_inner_function(async () => {
+                    // Ignore messages from peers that have disconnected. 
+                    // TODO: Evaluate if this could cause desyncs.
+
+                    if (!this._peer_data.get(peer_id!)) {
+                        return;
+                    }
+
                     let message_type = message[0];
                     let message_data = message.subarray(1);
 
@@ -362,7 +379,7 @@ export class WarpCore {
 
                                     console.log("FUNCTION CALLS: ", structuredClone(this._warp_core.function_calls));
                                     console.log("EXPECTED HASH AFTER: ", m.hash);
-                                    console.log("HASH BEFORE REMOTE CALL: ", this._warp_core.function_calls[index - 1].hash_after);
+                                    // console.log("HASH BEFORE REMOTE CALL: ", this._warp_core.function_calls[index - 1].hash_after);
                                     console.log("HASH AFTER REMOTE CALL: ", hash_after);
                                 }
                             }
@@ -384,7 +401,7 @@ export class WarpCore {
 
                             // TODO: Get roundtrip time to peer and increase current_time by half of that.
                             let round_trip_average = round_trip_time_total / round_trip_time_average_count;
-                            console.log("[warpcore] Approximate round trip offset: ", round_trip_average);
+                            console.log("[warpcore] Approximate round trip offset: ", round_trip_average / 2);
 
                             let current_time = heap_message.current_time;
 

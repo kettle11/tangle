@@ -37,7 +37,7 @@ export class Room {
     private _configuration: RoomConfiguration = {};
     private _current_room_name: String = "";
     private outgoing_data_chunk = new Uint8Array(MAX_MESSAGE_SIZE + 5);
-    private _artificial_delay = 0;
+    private _artificial_delay = 500;
 
     static async setup(_configuration: RoomConfiguration): Promise<Room> {
         let room = new Room();
