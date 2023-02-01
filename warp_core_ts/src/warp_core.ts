@@ -67,7 +67,7 @@ export class WarpCore {
         }
     }
 
-    static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void): Promise<WarpCore> {
+    static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState, warp_core: WarpCore) => void): Promise<WarpCore> {
         let warp_core = new WarpCore();
         await warp_core.setup_inner(wasm_binary, wasm_imports, recurring_call_interval, on_state_change_callback);
         return warp_core;
@@ -283,7 +283,7 @@ export class WarpCore {
         return history;
     }
 
-    private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void) {
+    private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState, warp_core: WarpCore) => void) {
         let room_configuration = {
             on_peer_joined: (peer_id: PeerId) => {
                 this._run_inner_function(async () => {
@@ -339,7 +339,7 @@ export class WarpCore {
                     }
 
                     // TODO: Make this callback with WarpCoreState instead.
-                    on_state_change_callback?.(state);
+                    on_state_change_callback?.(state, this);
                 });
             },
             on_message: async (peer_id: PeerId, message: Uint8Array) => {
@@ -368,7 +368,7 @@ export class WarpCore {
 
                             let time_stamp = {
                                 time: m.time,
-                                player_id: 0 // TODO:
+                                player_id: peer_id
                             };
 
                             if (this._warp_core_state == WarpCoreState.RequestingHeap) {
@@ -441,7 +441,7 @@ export class WarpCore {
 
                                 let time_stamp1 = {
                                     time: f1.time,
-                                    player_id: 0 // TODO: Real player ID
+                                    player_id: peer_id
                                 };
 
                                 let comparison = time_stamp_compare(f0.time_stamp, time_stamp1);
@@ -518,7 +518,12 @@ export class WarpCore {
             // Let remote calls insert the ID themselves
             // As-is this design makes it trivial for peers to spoof each-other.
             let args_processed = this._process_args(args);
-            let time_stamp = this._warp_core.next_time_stamp();
+
+            // TODO: Ensure each message has a unique timestamp.
+            let time_stamp = {
+                time: this._warp_core.current_time,
+                player_id: this.room.my_id
+            };
 
             // Adding time delay here decreases responsivity but also decreases the likelihood
             // peers will have to rollback.

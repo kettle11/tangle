@@ -463,13 +463,6 @@ export class OfflineWarpCore {
         return i;
     }
 
-    next_time_stamp(): TimeStamp {
-        return {
-            time: this.current_time,
-            player_id: 0,
-        };
-    }
-
     /// Returns the function call of this instance.
     async call_with_time_stamp(time_stamp: TimeStamp, function_name: string, args: Array<number>) {
         // TODO: Check for a PlayerId to insert into args
