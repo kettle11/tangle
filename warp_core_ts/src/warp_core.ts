@@ -1,8 +1,8 @@
-import { Room, RoomState } from "./room.js";
+import { PeerId, Room, RoomState } from "./room.js";
 import { arrayEquals, OfflineWarpCore, TimeStamp, time_stamp_compare } from "./offline_warp_core.js";
 import { MessageWriterReader } from "./message_encoding.js";
 
-export { RoomState } from "./room.js";
+export { RoomState, PeerId } from "./room.js";
 
 type FunctionCallMessage = {
     function_name: string,
@@ -41,16 +41,13 @@ export class WarpCore {
     room!: Room;
     private _warp_core!: OfflineWarpCore;
     private _buffered_messages: Array<FunctionCallMessage> = [];
-    private _peer_data: Map<string, PeerData> = new Map();
+    private _peer_data: Map<PeerId, PeerData> = new Map();
     private outgoing_message_buffer = new Uint8Array(500);
     private _warp_core_state = WarpCoreState.Disconnected;
     private _current_program_binary = new Uint8Array();
     private _block_reentrancy = false;
     private _enqueued_inner_calls = new Array(Function());
     private _debug_enabled = true;
-
-    // The simulation's time - Date.now()
-    private _time_offset = 0;
 
     private async _run_inner_function(f: Function, enqueue_condition: boolean = false) {
         if (!this._block_reentrancy && !enqueue_condition) {
@@ -169,7 +166,7 @@ export class WarpCore {
 
 
         // Encode args. 
-        // TODO: For now all args are encoded as f32s, but that is incorrect.
+        // TODO: For now all args are encoded as f64s, but that is incorrect.
         for (let i = 0; i < args.length; i++) {
             message_writer.write_f64(args[i]);
         }
@@ -285,7 +282,7 @@ export class WarpCore {
 
     private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState) => void) {
         let room_configuration = {
-            on_peer_joined: (peer_id: string) => {
+            on_peer_joined: (peer_id: PeerId) => {
                 this._run_inner_function(async () => {
                     this._peer_data.set(peer_id, {
                         last_sent_message: 0,
@@ -295,10 +292,25 @@ export class WarpCore {
                     this.room.send_message(this._encode_bounce_back_message(), peer_id);
                 });
             },
-            on_peer_left: (peer_id: string) => {
+            on_peer_left: (peer_id: PeerId, time: number) => {
                 this._run_inner_function(async () => {
                     console.log("REMOVE PEER");
                     this._peer_data.delete(peer_id);
+
+
+                    time += 500;
+                    if (time < this.earliest_safe_memory_time()) {
+                        console.error("POTENTIAL DESYNC DUE TO PEER LEAVING!");
+                        // TODO: +500 mitigates, but does not prevent, a desync 
+                        // caused by this event being received after a safe rollback.
+                        // 
+                    }
+
+                    let time_stamp = {
+                        time,
+                        player_id: 0 // 0 is for events sent by the server.
+                    };
+                    this._warp_core.call_with_time_stamp(time_stamp, "peer_left", [/* TODO PEER ID*/]);
                 });
             },
             on_state_change: (state: RoomState) => {
@@ -327,7 +339,7 @@ export class WarpCore {
                     on_state_change_callback?.(state);
                 });
             },
-            on_message: async (peer_id: string, message: Uint8Array) => {
+            on_message: async (peer_id: PeerId, message: Uint8Array) => {
                 let peer_connected_already = this._peer_data.get(peer_id);
 
                 this._run_inner_function(async () => {
@@ -386,8 +398,6 @@ export class WarpCore {
                             console.log("[warpcore] Approximate round trip offset: ", round_trip_time / 2);
 
                             let current_time = heap_message.current_time;
-
-                            this._time_offset = (Date.now() - heap_message.current_time);
 
                             console.log("INITIAL RECURRING CALL TIME: ", heap_message.recurring_call_time);
                             await this._warp_core.reset_with_wasm_memory(
@@ -522,31 +532,32 @@ export class WarpCore {
         this.request_heap();
     }
 
+    private earliest_safe_memory_time(): number {
+        let earliest_safe_memory = this._warp_core.recurring_call_time;
+        for (let [_, value] of this._peer_data) {
+            earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
+        }
+        return earliest_safe_memory;
+    }
+
     private async _progress_time_inner(time_progressed: number) {
-        // TODO: Check for reentrancy
-
-        // TODO: Check if too much time is being progressed and if so consider a catchup strategy
-        // or consider just disconnecting and reconnecting.
-        let steps_remaining = this._warp_core.steps_remaining(time_progressed);
-
         // TODO: Detect if we're falling behind and can't keep up.
-
 
         await this._warp_core.progress_time(time_progressed);
 
         // Keep track of when a message was received from each peer
         // and use that to determine what history is safe to throw away.
         let earliest_safe_memory = this._warp_core.recurring_call_time;
-        for (let [_, value] of this._peer_data) {
+        for (let [peer_id, value] of this._peer_data) {
             earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
 
-            // If we haven't message our peers in a while send them a message
+            // If we haven't messaged our peers in a while send them a message
             // This lets them know nothing has happened and they can clear memory.
             // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
             // it'd be better to figure out if those could be used instead.
             const KEEP_ALIVE_THRESHOLD = 200;
             if ((this._warp_core.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
-                this.room.send_message(this._encode_time_progressed_message(this._warp_core.current_time));
+                this.room.send_message(this._encode_time_progressed_message(this._warp_core.current_time), peer_id);
             }
         }
 
@@ -558,11 +569,6 @@ export class WarpCore {
         this._run_inner_function(async () => {
             await this._progress_time_inner(time_progressed);
         });
-    }
-
-    share_history() {
-        console.log(this._decode_share_history(this._encode_share_history()));
-        // this.room.send_message(this._encode_share_history());
     }
     get_memory(): WebAssembly.Memory {
         return this._warp_core.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
