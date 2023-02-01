@@ -40,24 +40,21 @@ export enum RollbackStrategy {
 
 export type TimeStamp = {
     time: number,
-    offset: number,
     player_id: number,
 };
 
-export function time_stamp_less_than(a: TimeStamp, b: TimeStamp): boolean {
-    if (a.time != b.time) {
-        return a.time < b.time;
+export function time_stamp_compare(a: TimeStamp, b: TimeStamp): number {
+    let v = Math.sign(a.time - b.time);
+    if (v != 0) {
+        return v;
     }
 
-    if (a.player_id != b.player_id) {
-        return a.player_id < b.player_id;
+    v = Math.sign(a.player_id - b.player_id);
+    if (v != 0) {
+        return v;
     }
 
-    if (a.offset != b.offset) {
-        return a.offset < b.offset;
-    }
-
-    return false;
+    return 0;
 }
 
 export type FunctionCall = {
@@ -70,13 +67,18 @@ export type FunctionCall = {
     wasm_snapshot_before?: WasmSnapShot
 };
 
+type UpcomingFunctionCall = {
+    function_name: string,
+    args: Array<number>,
+    time_stamp: TimeStamp,
+}
+
 export class OfflineWarpCore {
     /// The Wasm code used by WarpCore itself.
     static _warpcore_wasm?: WebAssembly.WebAssemblyInstantiatedSource;
     /// The user Wasm that WarpCore is syncing 
     wasm_instance?: WebAssembly.WebAssemblyInstantiatedSource = undefined;
     current_time: number = 0;
-    private time_offset: number = 0;
     private _recurring_call_interval: number = 0;
     recurring_call_time: number = 0;
     private _recurring_call_name?: string = "fixed_update";
@@ -85,6 +87,7 @@ export class OfflineWarpCore {
     private _imports: WebAssembly.Imports = {};
 
     private _rollback_strategy: RollbackStrategy = RollbackStrategy.Granular;
+    private _upcoming_function_calls: Array<UpcomingFunctionCall> = new Array();
 
     // Optionally track hashes after each function call
     hash_tracking: boolean = true;
@@ -205,7 +208,6 @@ export class OfflineWarpCore {
         // TODO: It might be better to not reset time here.
         this.current_time = current_time;
         this.recurring_call_time = 0;
-        this.time_offset = 0;
     }
 
     /// Restarts the WarpCore with a new memory.
@@ -223,7 +225,6 @@ export class OfflineWarpCore {
 
         this.current_time = current_time;
         this.recurring_call_time = recurring_call_time;
-        this.time_offset = 0;
     }
 
     remove_history_before(time: number) {
@@ -295,45 +296,38 @@ export class OfflineWarpCore {
     }
 
     async progress_time(time_progressed: number) {
-        if (time_progressed <= 0) {
-            return;
-        }
-
-        if (this._recurring_call_interval == 0) {
-            return;
-        }
-
         this.current_time += time_progressed;
 
-        this.time_offset = 0;
+        // Add recurring function calls
+        if (this._recurring_call_name && this._recurring_call_interval > 0) {
+            while ((this.current_time - this.recurring_call_time) > this._recurring_call_interval) {
+                this.recurring_call_time += this._recurring_call_interval;
 
-
-        const MAX_RECURRING_CALLS = 20;
-        let recurring_call_count = 0;
-        // Trigger all of the recurring calls.
-        // TODO: Check if recurring call interval is defined at all.
-        while ((this.current_time - this.recurring_call_time) > this._recurring_call_interval) {
-            /*
-            recurring_call_count += 1;
-            if (recurring_call_count > MAX_RECURRING_CALLS) {
-                console.error("BREAKING DUE TO MAX RECURRING CALLS");
-                break;
-            }
-            */
-
-            this.time_offset = 0;
-            this.recurring_call_time += this._recurring_call_interval;
-
-            if (this._recurring_call_name) {
-                // TODO: Real player ID.
                 let time_stamp = {
                     time: this.recurring_call_time,
-                    offset: 0, // A recurring call should always be the first call
                     player_id: 0
                 };
-                this.time_offset += 1;
-                await this._call_inner(this._recurring_call_name, time_stamp, []);
+
+                this._upcoming_function_calls.push({
+                    function_name: this._recurring_call_name,
+                    time_stamp,
+                    args: []
+                });
             }
+        }
+
+        this._upcoming_function_calls.sort((a, b) => (time_stamp_compare(a.time_stamp, b.time_stamp)));
+
+        // TODO: Assertion for duplicate time stamps.
+
+        // TODO: Add a time budget here. 
+
+        while (this._upcoming_function_calls[0] && Math.sign(this._upcoming_function_calls[0].time_stamp.time - this.current_time) == -1) {
+            let function_call = this._upcoming_function_calls.shift()!;
+
+            //  console.log("CALLING %s", function_call.function_name, function_call.time_stamp);
+
+            await this._call_inner(function_call.function_name, function_call.time_stamp, function_call!.args);
         }
     }
 
@@ -382,7 +376,7 @@ export class OfflineWarpCore {
         for (; i > 0; i--) {
             // Keep going until a timestamp less than `time_stamp` is found.
             let function_call = this.function_calls[i - 1];
-            if (time_stamp_less_than(function_call.time_stamp, time_stamp)) {
+            if (time_stamp_compare(function_call.time_stamp, time_stamp) == -1) {
 
                 if (this.function_calls[i]) {
                     await this._revert_actions(actions_to_remove);
@@ -464,20 +458,28 @@ export class OfflineWarpCore {
     next_time_stamp(): TimeStamp {
         return {
             time: this.current_time,
-            offset: this.time_offset,
             player_id: 0,
         };
     }
 
     /// Returns the function call of this instance.
-    async call_with_time_stamp(time_stamp: TimeStamp, function_name: string, args: Array<number>): Promise<number> {
+    async call_with_time_stamp(time_stamp: TimeStamp, function_name: string, args: Array<number>) {
         // TODO: Check for a PlayerId to insert into args
         // TODO: Use a real player ID.
+
+        this._upcoming_function_calls.push({
+            function_name,
+            args,
+            time_stamp
+        });
+
+        /*
         let new_call_index = await this._call_inner(function_name, time_stamp, args);
 
         // console.log("FUNCTION CALLS: ", structuredClone(this.function_calls));
         this.time_offset += 1;
         return new_call_index;
+        */
     }
 
     /// Call a function but ensure its results do not persist and cannot cause a desync.
@@ -490,7 +492,7 @@ export class OfflineWarpCore {
         }
         (this.wasm_instance?.instance.exports[function_name] as CallableFunction)(...args);
         if (snapshot) {
-            // this._apply_snapshot(snapshot);
+            this._apply_snapshot(snapshot);
         }
         let after = this._actions.length;
         await this._revert_actions(after - before);

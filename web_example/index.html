@@ -85,17 +85,31 @@
 declare function set_color(r: u8, g: u8, b: u8, a: u8): void
 
 @external("env", "draw_circle")
-declare function draw_circle(x: f32, y: f32, radius: f32): void
+declare function draw_circle(x: f64, y: f64, radius: f64): void
 
-const BALL_RADIUS: f32 = 30.0;
+const BALL_MAX_RADIUS = 40.0;
+const BALL_MIN_RADIUS = 10.0;
 
 let balls = new Array<Point>();
 let balls_previous = new Array<Point>();
 
+let ball_radius = new Array<f64>();
+let ball_color = new Array<Color>();
+
+class Color {
+    r: u8 = 0; g: u8 = 255; b: u8 = 255;
+}
+
 new_ball(100, 100);
-function new_ball(x: f32, y: f32): void {
+function new_ball(x: f64, y: f64): void {
     balls.push(new Point(x, y));
     balls_previous.push(new Point(x, y));
+    let color = new Color();
+    color.r = (Math.random() * 255) as u8;
+    color.g = (Math.random() * 255) as u8;
+    color.b = (Math.random() * 255) as u8;
+    ball_color.push(color);
+    ball_radius.push(Math.random() * BALL_MAX_RADIUS + BALL_MIN_RADIUS);
 }
 
 export function fixed_update(): void {
@@ -115,8 +129,10 @@ export function fixed_update(): void {
             if (i == j) continue;
             let to_next = balls[j].sub(balls[i]);
             let length = to_next.length();
-            if (length < BALL_RADIUS) {
-                let v = to_next.mul_scalar((1.0 / length) * BALL_RADIUS);
+
+            let total_radius = (ball_radius[i] + ball_radius[j]);
+            if (length < total_radius) {
+                let v = to_next.mul_scalar((1.0 / length) * total_radius);
                 let offset = to_next.sub(v);
 
                 let o = offset.div_scalar(2);
@@ -128,7 +144,7 @@ export function fixed_update(): void {
 
     // Add a floor and walls
     for(let i = 0; i < balls.length; ++i) {
-        let below_y = balls[i].y - 400;
+        let below_y = (balls[i].y + ball_radius[i]) - 400;
         if (below_y > 0) {
             balls[i].y -= below_y;
         }
@@ -146,23 +162,24 @@ export function fixed_update(): void {
 }
 
 export function pointer_down(x: u32, y: u32): void {
-    new_ball(x as f32, y as f32);
+    new_ball(x as f64, y as f64);
 }
 
 export function draw(): void {
     for(let i = 0; i < balls.length; ++i) {
         let ball = balls[i];
-        set_color(0, 0, 255, 255);
-        draw_circle(ball.x, ball.y, BALL_RADIUS / 2);
+        let color = ball_color[i];
+        set_color(color.r, color.g, color.b, 255);
+        draw_circle(ball.x, ball.y, ball_radius[i]);
     }
 }
 
 
 class Point {
-    x: f32;
-    y: f32;
+    x: f64;
+    y: f64;
     
-    constructor (x: f32, y: f32) {
+    constructor (x: f64, y: f64) {
         this.x = x;
         this.y = y;
     }
@@ -175,16 +192,16 @@ class Point {
         return new Point(this.x - other.x, this.y - other.y);
     }
 
-    div_scalar(scalar: f32): Point {
+    div_scalar(scalar: f64): Point {
         return new Point(this.x / scalar, this.y / scalar);
     }
 
-    mul_scalar(scalar: f32): Point {
+    mul_scalar(scalar: f64): Point {
         return new Point(this.x * scalar, this.y * scalar);
     }
 
-    length(): f32 {
-        return Math.sqrt(this.x * this.x + this.y * this.y) as f32;
+    length(): f64 {
+        return Math.sqrt(this.x * this.x + this.y * this.y);
     }
 }`;
         // Handle moving code

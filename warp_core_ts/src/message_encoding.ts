@@ -63,11 +63,6 @@ export class MessageWriterReader {
         this.offset += 4;
     }
 
-    write_f64(v: number) {
-        this.data_view.setFloat64(this.offset, v);
-        this.offset += 8;
-    }
-
     read_u8() {
         let result = this.data_view.getUint8(this.offset);
         this.offset += 1;
@@ -97,4 +92,44 @@ export class MessageWriterReader {
         this.offset += 8;
         return result;
     }
+
+    write_f64(v: number) {
+        this.data_view.setFloat64(this.offset, v);
+        this.offset += 8;
+    }
+
+    read_i64() {
+        let result = this.data_view.getBigInt64(this.offset);
+        this.offset += 8;
+        return result;
+    }
+
+    write_i64(v: bigint) {
+        this.data_view.setBigInt64(this.offset, v);
+        this.offset += 8;
+    }
+
+    write_tagged_number(number: number | bigint) {
+        if (typeof number == "bigint") {
+            this.write_u8(NumberTag.I64);
+            this.write_i64(number);
+        } else {
+            this.write_u8(NumberTag.F64);
+            this.write_f64(number);
+        }
+    }
+
+    read_tagged_number() {
+        let tag_byte = this.read_u8();
+        if (tag_byte === NumberTag.F64) {
+            return this.read_f64();
+        } else {
+            return this.read_i64();
+        }
+    }
+}
+
+enum NumberTag {
+    F64,
+    I64,
 }

@@ -1,5 +1,5 @@
 import { Room, RoomState } from "./room.js";
-import { arrayEquals, OfflineWarpCore, TimeStamp, time_stamp_less_than } from "./offline_warp_core.js";
+import { arrayEquals, OfflineWarpCore, TimeStamp, time_stamp_compare } from "./offline_warp_core.js";
 import { MessageWriterReader } from "./message_encoding.js";
 
 export { RoomState } from "./room.js";
@@ -36,9 +36,6 @@ enum WarpCoreState {
     Connected,
     RequestingHeap
 }
-
-let round_trip_time_total = 0;
-let round_trip_time_average_count = 0;
 
 export class WarpCore {
     room!: Room;
@@ -100,7 +97,7 @@ export class WarpCore {
                 globals_count += 1;
             }
         }
-        let heap_message = new Uint8Array(encoded_data.byteLength + 1 + 8 + 8 + 4 + (8 + 4) * globals_count);
+        let heap_message = new Uint8Array(encoded_data.byteLength + 1 + 8 + 8 + 4 + (8 + 4 + 1) * globals_count);
         let message_writer = new MessageWriterReader(heap_message);
         message_writer.write_u8(MessageType.SentHeap);
         message_writer.write_f64(this._warp_core.current_time);
@@ -113,7 +110,7 @@ export class WarpCore {
             if (key.slice(0, 3) == "wg_") {
                 let index = parseInt(key.match(/\d+$/)![0]);
                 message_writer.write_u32(index);
-                message_writer.write_f64((v as WebAssembly.Global).value);
+                message_writer.write_tagged_number((v as WebAssembly.Global).value);
             }
         }
         message_writer.write_raw_bytes(encoded_data);
@@ -131,7 +128,7 @@ export class WarpCore {
         let global_values = new Map();
         for (let i = 0; i < mutable_globals_length; i++) {
             let index = message_reader.read_u32();
-            let value = message_reader.read_f64();
+            let value = message_reader.read_tagged_number();
             global_values.set(index, value);
         }
 
@@ -163,12 +160,11 @@ export class WarpCore {
         return data;
     }
 
-    private _encode_wasm_call_message(function_string: string, time: number, time_offset: number, args: [number], hash?: Uint8Array): Uint8Array {
+    private _encode_wasm_call_message(function_string: string, time: number, args: [number], hash?: Uint8Array): Uint8Array {
         let message_writer = new MessageWriterReader(this.outgoing_message_buffer);
         message_writer.write_u8(MessageType.WasmCall);
 
         message_writer.write_f64(time);
-        message_writer.write_f64(time_offset);
         message_writer.write_u8(args.length);
 
 
@@ -178,9 +174,11 @@ export class WarpCore {
             message_writer.write_f64(args[i]);
         }
 
+        /*
         if (this._debug_enabled) {
             message_writer.write_raw_bytes(hash!);
         }
+        */
 
         // TODO: The set of possible function call names is finite per-module, so this could be
         // turned into a simple index instead of sending the whole string.
@@ -192,7 +190,6 @@ export class WarpCore {
         let message_reader = new MessageWriterReader(data);
 
         let time = message_reader.read_f64();
-        let time_offset = message_reader.read_f64();
         let args_length = message_reader.read_u8();
 
         let args = new Array<number>(args_length);
@@ -201,15 +198,18 @@ export class WarpCore {
         }
 
         let hash;
+
+        /*
+        let hash;
         if (this._debug_enabled) {
             hash = message_reader.read_fixed_raw_bytes(16);
         }
+        */
 
         let function_name = text_decoder.decode(data.subarray(message_reader.offset));
         return {
             function_name,
             time,
-            time_offset,
             args,
             hash
         };
@@ -256,7 +256,6 @@ export class WarpCore {
 
             let function_call = this._warp_core.function_calls[i];
             message_writer.write_f64(function_call.time_stamp.time);
-            message_writer.write_f64(function_call.time_stamp.offset);
             message_writer.write_raw_bytes(function_call.hash_after!);
 
             message_writer.write_string(function_call.name);
@@ -272,13 +271,11 @@ export class WarpCore {
 
         while (message_reader.offset < data.length) {
             let time = message_reader.read_f64();
-            let time_offset = message_reader.read_f64();
             let hash = message_reader.read_fixed_raw_bytes(16);
             let function_name = message_reader.read_string();
 
             history.push({
                 time,
-                time_offset,
                 hash,
                 function_name
             });
@@ -356,9 +353,9 @@ export class WarpCore {
 
                             let time_stamp = {
                                 time: m.time,
-                                offset: m.time_offset,
                                 player_id: 0 // TODO:
                             };
+
                             if (this._warp_core_state == WarpCoreState.RequestingHeap) {
                                 this._buffered_messages.push({
                                     function_name: m.function_name,
@@ -366,22 +363,7 @@ export class WarpCore {
                                     args: m.args
                                 });
                             } else {
-                                await this._progress_time_inner(m.time - this._warp_core.current_time);
-
-                                // TODO: Could this be reentrant if incoming messages aren't respecting the async-ness?
-                                let index = await this._warp_core.call_with_time_stamp(time_stamp, m.function_name, m.args);
-
-                                let hash_after = this._warp_core.function_calls[index].hash_after;
-
-                                if (m.hash && !arrayEquals(m.hash, hash_after!)) {
-                                    console.error("DESYNC DETECTED! SENDING HISTORY");
-                                    this.room.send_message(this._encode_share_history(), peer_id);
-
-                                    console.log("FUNCTION CALLS: ", structuredClone(this._warp_core.function_calls));
-                                    console.log("EXPECTED HASH AFTER: ", m.hash);
-                                    // console.log("HASH BEFORE REMOTE CALL: ", this._warp_core.function_calls[index - 1].hash_after);
-                                    console.log("HASH AFTER REMOTE CALL: ", hash_after);
-                                }
+                                await this._warp_core.call_with_time_stamp(time_stamp, m.function_name, m.args);
                             }
 
                             break;
@@ -400,8 +382,8 @@ export class WarpCore {
                             let heap_message = this._decode_heap_message(message_data);
 
                             // TODO: Get roundtrip time to peer and increase current_time by half of that.
-                            let round_trip_average = round_trip_time_total / round_trip_time_average_count;
-                            console.log("[warpcore] Approximate round trip offset: ", round_trip_average / 2);
+                            let round_trip_time = this._peer_data.get(peer_id)!.round_trip_time;
+                            console.log("[warpcore] Approximate round trip offset: ", round_trip_time / 2);
 
                             let current_time = heap_message.current_time;
 
@@ -411,7 +393,7 @@ export class WarpCore {
                             await this._warp_core.reset_with_wasm_memory(
                                 heap_message.heap_data,
                                 heap_message.global_values,
-                                current_time + (round_trip_average / 2),
+                                current_time + (round_trip_time / 2),
                                 heap_message.recurring_call_time,
                             );
 
@@ -423,17 +405,13 @@ export class WarpCore {
                         }
                         case (MessageType.SetProgram): {
                             // TODO: This is incorrect. Make sure all peers are aware of their roundtrip average with each-other
-                            let round_trip_average = 0;
-                            if (round_trip_time_average_count != 0) {
-                                round_trip_average = round_trip_time_total / round_trip_time_average_count;
-
-                            }
-                            console.log("[warpcore] Approximate round trip offset: ", round_trip_average);
+                            let round_trip_time = this._peer_data.get(peer_id)!.round_trip_time;
+                            console.log("[warpcore] Approximate round trip offset: ", round_trip_time / 2);
 
                             console.log("SETTING PROGRAM!");
                             let new_program = this._decode_new_program_message(message_data);
                             this._current_program_binary = new_program;
-                            await this._warp_core.reset_with_new_program(new_program, round_trip_average);
+                            await this._warp_core.reset_with_new_program(new_program, (round_trip_time / 2));
                             console.log("DONE SETTING PROGRAM");
                             break;
                         }
@@ -450,21 +428,27 @@ export class WarpCore {
 
                                 let time_stamp1 = {
                                     time: f1.time,
-                                    offset: f1.time_offset,
                                     player_id: 0 // TODO: Real player ID
                                 };
 
-                                if (time_stamp_less_than(f0.time_stamp, time_stamp1)) {
-                                    i += 1;
-                                } else if (time_stamp_less_than(time_stamp1, f0.time_stamp)) {
-                                    j += 1;
-                                } else {
-                                    // They are equal. Compare properties:
-                                    if (!arrayEquals(f0.hash_after!, f1.hash)) {
-                                        console.log('DESYNC. LOCAL INDEX: %d REMOTE INDEX: %d', i, j);
+                                let comparison = time_stamp_compare(f0.time_stamp, time_stamp1);
+                                switch (comparison) {
+                                    case -1: {
+                                        i += 1;
+                                        break;
                                     }
-                                    i += 1;
-                                    j += 1;
+                                    case 1: {
+                                        j += 1;
+                                        break;
+                                    }
+                                    case 0: {
+                                        // They are equal. Compare properties:
+                                        if (!arrayEquals(f0.hash_after!, f1.hash)) {
+                                            console.log('DESYNC. LOCAL INDEX: %d REMOTE INDEX: %d', i, j);
+                                        }
+                                        i += 1;
+                                        j += 1;
+                                    }
                                 }
                             }
                             break;
@@ -476,8 +460,7 @@ export class WarpCore {
                         }
                         case (MessageType.BounceBackReturn): {
                             let time = this._decode_bounce_back_return(message_data);
-                            round_trip_time_total += Date.now() - time;
-                            round_trip_time_average_count += 1;
+                            this._peer_data.get(peer_id)!.round_trip_time = Date.now() - time;
                             break;
                         }
                     }
@@ -508,12 +491,16 @@ export class WarpCore {
         this._run_inner_function(async () => {
             let time_stamp = this._warp_core.next_time_stamp();
 
-            let new_function_call_index = await this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
+            // Adding time delay here decreases responsivity but also decreases the likelihood
+            // peers will have to rollback.
+            // This could be a good place to add delay if a peer has higher latency than 
+            // everyone else in the room.
+            // time_stamp.time += 50;
 
-            let hash_after = this._warp_core.function_calls[new_function_call_index].hash_after;
+            await this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
 
             // Network the call
-            this.room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, time_stamp.offset, args, hash_after));
+            this.room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, args));
 
             for (let [_, value] of this._peer_data) {
                 value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
