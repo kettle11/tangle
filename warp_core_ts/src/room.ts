@@ -38,14 +38,14 @@ function compute_id_from_ip(ipAddress: string): number {
     const parts = ipAddress.split(':');
     const ip = parts[0].split('.');
     const port = parseInt(parts[1], 10);
-  
+
     for (let i = 0; i < 4; i++) {
-      uniqueNumber += parseInt(ip[i], 10) * Math.pow(256, 3 - i);
+        uniqueNumber += parseInt(ip[i], 10) * Math.pow(256, 3 - i);
     }
     uniqueNumber += port;
-    
+
     return uniqueNumber;
-  }
+}
 
 export class Room {
     private _peers_to_join: Set<PeerId> = new Set();
@@ -54,8 +54,8 @@ export class Room {
     private _configuration: RoomConfiguration = {};
     private _current_room_name: String = "";
     private outgoing_data_chunk = new Uint8Array(MAX_MESSAGE_SIZE + 5);
-    private _artificial_delay = 60;
-    my_id: number = 0;;
+    private _artificial_delay = 0;
+    my_id: number = 0;
 
     static async setup(_configuration: RoomConfiguration): Promise<Room> {
         let room = new Room();
@@ -64,6 +64,10 @@ export class Room {
     }
 
     private message_peer_inner(peer: Peer, data: Uint8Array) {
+        if (!(peer.data_channel.readyState === "open")) {
+            // TODO: This could result in desyncs if this happens.
+            return;
+        }
         // TODO: Verify this
         // If the message is too large fragment it. 
         // TODO: If there's not space in the outgoing channel push messages to an outgoing buffer.
@@ -84,11 +88,14 @@ export class Room {
                 this.outgoing_data_chunk[0] = MessageType.MultiPartContinuation;
                 this.outgoing_data_chunk.set(data_offset.subarray(0, length), 1);
                 data_offset = data_offset.subarray(length);
+
                 peer.data_channel.send(this.outgoing_data_chunk.subarray(0, length + 1));
+
             }
         } else {
             this.outgoing_data_chunk[0] = MessageType.SinglePart;
             this.outgoing_data_chunk.set(data, 1);
+
             peer.data_channel.send(this.outgoing_data_chunk.subarray(0, data.byteLength + 1));
         }
 
@@ -277,7 +284,7 @@ export class Room {
 
             /*
             peer_connection.getStats().then((stats) => {
-
+    
                 console.log("[room] DataChannel stats: ");
                 console.log(stats);
                 stats.forEach((report) => {
@@ -286,9 +293,9 @@ export class Room {
                         console.log("[room] Round trip seconds to _peers: %s : %s", peer_id, report.currentRoundTripTime);
                     }
                 });
-
+    
                 this._peers_to_join.delete(peer_id);
-
+    
                 this._peers.get(peer_id)!.ready = true;
                 this._configuration.on_peer_joined?.(peer_id);
                 this.check_if_joined();

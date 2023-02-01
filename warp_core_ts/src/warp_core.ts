@@ -67,7 +67,7 @@ export class WarpCore {
         }
     }
 
-    static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState, warp_core: WarpCore) => void): Promise<WarpCore> {
+    static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: WarpCoreState, warp_core: WarpCore) => void): Promise<WarpCore> {
         let warp_core = new WarpCore();
         await warp_core.setup_inner(wasm_binary, wasm_imports, recurring_call_interval, on_state_change_callback);
         return warp_core;
@@ -283,7 +283,7 @@ export class WarpCore {
         return history;
     }
 
-    private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: RoomState, warp_core: WarpCore) => void) {
+    private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: WarpCoreState, warp_core: WarpCore) => void) {
         let room_configuration = {
             on_peer_joined: (peer_id: PeerId) => {
                 this._run_inner_function(async () => {
@@ -324,22 +324,27 @@ export class WarpCore {
 
                     switch (state) {
                         case RoomState.Connected: {
-                            this._warp_core_state = WarpCoreState.Connected;
                             this.request_heap();
+
+                            if (this._peer_data.size == 0) {
+                                // We have no peer so we're connected
+                                this._warp_core_state = WarpCoreState.Connected;
+                                on_state_change_callback?.(this._warp_core_state, this);
+                            }
                             break;
                         }
                         case RoomState.Disconnected: {
                             this._warp_core_state = WarpCoreState.Disconnected;
+                            on_state_change_callback?.(this._warp_core_state, this);
                             break;
                         }
                         case RoomState.Joining: {
                             this._warp_core_state = WarpCoreState.Disconnected;
+                            on_state_change_callback?.(this._warp_core_state, this);
                             break;
                         }
                     }
 
-                    // TODO: Make this callback with WarpCoreState instead.
-                    on_state_change_callback?.(state, this);
                 });
             },
             on_message: async (peer_id: PeerId, message: Uint8Array) => {
@@ -414,6 +419,9 @@ export class WarpCore {
                                 await this._warp_core.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
                             }
                             this._buffered_messages = [];
+
+                            this._warp_core_state = WarpCoreState.Connected;
+                            on_state_change_callback?.(this._warp_core_state, this);
                             break;
                         }
                         case (MessageType.SetProgram): {
