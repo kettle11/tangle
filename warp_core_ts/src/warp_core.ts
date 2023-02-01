@@ -546,7 +546,6 @@ export class WarpCore {
             // it'd be better to figure out if those could be used instead.
             const KEEP_ALIVE_THRESHOLD = 200;
             if ((this._warp_core.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
-
                 this.room.send_message(this._encode_time_progressed_message(this._warp_core.current_time));
             }
         }

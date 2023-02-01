@@ -296,6 +296,7 @@ export class OfflineWarpCore {
     }
 
     async progress_time(time_progressed: number) {
+        // time_progressed is repurposed as a resimulation budget.
         this.current_time += time_progressed;
 
         // Add recurring function calls
@@ -322,12 +323,21 @@ export class OfflineWarpCore {
 
         // TODO: Add a time budget here. 
 
+        // TODO: Estimate how long a fixed update takes and use that to not spend too much computation.
+        let start_time = performance.now();
+
         while (this._upcoming_function_calls[0] && Math.sign(this._upcoming_function_calls[0].time_stamp.time - this.current_time) == -1) {
             let function_call = this._upcoming_function_calls.shift()!;
 
             //  console.log("CALLING %s", function_call.function_name, function_call.time_stamp);
 
             await this._call_inner(function_call.function_name, function_call.time_stamp, function_call!.args);
+
+            let time_now = performance.now();
+            if ((start_time - time_now) > (time_progressed * 0.75)) {
+                console.log("[warpcore] Bailing out of simulation to avoid missed frames")
+                break;
+            }
         }
     }
 

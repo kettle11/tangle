@@ -294,7 +294,7 @@ class Point {
                 }, 300);
             });
 
-            // compile_assemblyscript(editor.getValue());
+            compile_assemblyscript(editor.getValue());
         });
 
 
@@ -341,12 +341,18 @@ class Point {
 
                     // binaryEditor.setValue(output + `(module\n ;; FAILURE ${error.message}\n)\n`)
                 } else {
+                    let module_wasm = outputs[wasmModule]
+
+                    if (!window.warpcore) {
+                        run(module_wasm);
+                        return;
+                    }
+
                     let errors_box_element = document.getElementById("errors_box");
                     errors_box_element.innerText = "";
                     errors_box_element.style.backgroundColor = "#4eda57";
 
                     console.log("OUTPUTS: ", outputs);
-                    var module_wasm = outputs[wasmModule]
                     window.warpcore.set_program(module_wasm);
 
                     // module_js = outputs[jsModule]
@@ -360,10 +366,7 @@ class Point {
 
         import { WarpCore, RoomState } from "./warp_core.js";
 
-        async function run() {
-            const image = new Image(60, 45); // Using optional size for image
-            image.src = "kenney_pixelplatformer/Tilemap/characters.png";
-
+        async function run(wasm_binary) {
             var canvas = document.getElementById("myCanvas");
             var context = canvas.getContext("2d");
 
@@ -377,7 +380,7 @@ class Point {
             context.fillStyle = "blue";
             context.fillRect(0, 0, canvas.width, canvas.height);
 
-            let wasm_binary = await fetch("example_script.wasm").then(response => response.arrayBuffer());
+            // let wasm_binary = await fetch("example_script.wasm").then(response => response.arrayBuffer());
             const decoder = new TextDecoder();
 
             let imports = {
@@ -425,28 +428,29 @@ class Point {
             };
 
             let player_id = 0;
-            let current_animation_time = Date.now();
+            let current_animation_time = performance.now();
             let fixed_update_rate = 1000 / 60;
             let start_time = 0;
             let paused = false;
 
-            async function animation() {
+            async function animation(time_now) {
 
-                if (!paused) {
+                if (time_now) {
+                    if (!paused) {
 
-                    if (canvas.width != canvas.clientWidth || canvas.height != canvas.clientHeight) {
-                        canvas.width = canvas.clientWidth;
-                        canvas.height = canvas.clientHeight;
+                        if (canvas.width != canvas.clientWidth || canvas.height != canvas.clientHeight) {
+                            canvas.width = canvas.clientWidth;
+                            canvas.height = canvas.clientHeight;
+                        }
+                        let diff = time_now - current_animation_time;
+
+                        context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+
+                        await warpcore.progress_time(diff);
+                        await warpcore.call_and_revert("draw", []);
+
+                        current_animation_time = time_now;
                     }
-                    let time_now = Date.now();
-                    let diff = time_now - current_animation_time;
-
-                    context.clearRect(0, 0, context.canvas.width, context.canvas.height);
-
-                    await warpcore.progress_time(diff);
-                    await warpcore.call_and_revert("draw", []);
-
-                    current_animation_time = time_now;
                 }
                 window.requestAnimationFrame(animation);
             }
@@ -465,14 +469,10 @@ class Point {
             window.warpcore = warpcore;
 
             document.onkeyup = async (event) => {
-
-
                 if (event.code == "KeyH") {
                     // window.warpcore.share_history();
                     compile_assemblyscript(editor.getValue());
                 }
-
-
             };
 
             canvas.onpointerdown = async (event) => {
@@ -482,7 +482,6 @@ class Point {
                 }
             };
         };
-        run();
 
     </script>
 

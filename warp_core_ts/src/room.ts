@@ -37,7 +37,7 @@ export class Room {
     private _configuration: RoomConfiguration = {};
     private _current_room_name: String = "";
     private outgoing_data_chunk = new Uint8Array(MAX_MESSAGE_SIZE + 5);
-    private _artificial_delay = 200;
+    private _artificial_delay = 60;
 
     static async setup(_configuration: RoomConfiguration): Promise<Room> {
         let room = new Room();
@@ -301,6 +301,8 @@ export class Room {
                         }
                     }
                 }
+            } else {
+                console.error("DISCARDING MESSAGE FROM PEER: ", event.data);
             }
         }
 
@@ -313,9 +315,12 @@ export class Room {
         peer.latest_message_offset += data.byteLength;
 
         if (peer.latest_message_offset == peer.latest_message_data.length) {
+            let data = peer.latest_message_data;
+
+            // TODO: This introduces a potential one-frame delay on incoming events.
             // Message received
             setTimeout(() => {
-                this._configuration.on_message?.(peer.id, peer.latest_message_data);
+                this._configuration.on_message?.(peer.id, data);
             }, this._artificial_delay);
             peer.latest_message_offset = 0;
             peer.latest_message_data = new Uint8Array(0);
