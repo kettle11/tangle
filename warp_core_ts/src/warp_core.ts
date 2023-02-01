@@ -37,6 +37,9 @@ enum WarpCoreState {
     RequestingHeap
 }
 
+class UserIdType { }
+export const UserId = new UserIdType();
+
 export class WarpCore {
     room!: Room;
     private _warp_core!: OfflineWarpCore;
@@ -157,7 +160,7 @@ export class WarpCore {
         return data;
     }
 
-    private _encode_wasm_call_message(function_string: string, time: number, args: [number], hash?: Uint8Array): Uint8Array {
+    private _encode_wasm_call_message(function_string: string, time: number, args: Array<number>, hash?: Uint8Array): Uint8Array {
         let message_writer = new MessageWriterReader(this.outgoing_message_buffer);
         message_writer.write_u8(MessageType.WasmCall);
 
@@ -497,8 +500,24 @@ export class WarpCore {
         });
     }
 
-    call(function_name: string, args: [number]) {
+    private _process_args(args: Array<number | UserIdType>): Array<number> {
+        return args.map((a) => {
+            if (typeof a != "number") {
+                // Assume this is a UserId
+                return this.room.my_id;
+            } else {
+                return a;
+            }
+        });
+    }
+
+    call(function_name: string, args: [number | UserIdType]) {
         this._run_inner_function(async () => {
+
+            // TODO: Only process the args like this for local calls.
+            // Let remote calls insert the ID themselves
+            // As-is this design makes it trivial for peers to spoof each-other.
+            let args_processed = this._process_args(args);
             let time_stamp = this._warp_core.next_time_stamp();
 
             // Adding time delay here decreases responsivity but also decreases the likelihood
@@ -507,10 +526,10 @@ export class WarpCore {
             // everyone else in the room.
             // time_stamp.time += 50;
 
-            await this._warp_core.call_with_time_stamp(time_stamp, function_name, args);
+            await this._warp_core.call_with_time_stamp(time_stamp, function_name, args_processed);
 
             // Network the call
-            this.room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, args));
+            this.room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, args_processed));
 
             for (let [_, value] of this._peer_data) {
                 value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
@@ -519,9 +538,10 @@ export class WarpCore {
     }
 
     /// This call will have no impact but can be useful to draw or query from the world.
-    call_and_revert(function_name: string, args: [number]) {
+    call_and_revert(function_name: string, args: Array<number>) {
         this._run_inner_function(async () => {
-            this._warp_core.call_and_revert(function_name, args);
+            let args_processed = this._process_args(args);
+            this._warp_core.call_and_revert(function_name, args_processed);
         });
     }
 

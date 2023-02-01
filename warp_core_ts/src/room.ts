@@ -50,7 +50,7 @@ export class Room {
     private _current_room_name: String = "";
     private outgoing_data_chunk = new Uint8Array(MAX_MESSAGE_SIZE + 5);
     private _artificial_delay = 60;
-    private _my_id: string = "";
+    my_id: number = 0;;
 
     static async setup(_configuration: RoomConfiguration): Promise<Room> {
         let room = new Room();
@@ -159,7 +159,7 @@ export class Room {
                     document.location.origin.toString() +
                     '#' + message.room_name;
                 this._current_room_name = message.room_name;
-                this._my_id = message.your_ip;
+                this.my_id = compute_id_from_ip(message.your_ip);
             } else if (message.join_room) {
                 console.log("[room] Peer joining room: ", peer_id);
                 this.make_rtc_peer_connection(peer_ip, peer_id, server_socket);

@@ -321,8 +321,6 @@ export class OfflineWarpCore {
 
         // TODO: Assertion for duplicate time stamps.
 
-        // TODO: Add a time budget here. 
-
         // TODO: Estimate how long a fixed update takes and use that to not spend too much computation.
         let start_time = performance.now();
 
@@ -494,7 +492,7 @@ export class OfflineWarpCore {
 
     /// Call a function but ensure its results do not persist and cannot cause a desync.
     /// This can be used for things like drawing or querying from the Wasm
-    async call_and_revert(function_name: string, args: [number]) {
+    async call_and_revert(function_name: string, args: Array<number>) {
         let before = this._actions.length;
         let snapshot;
         if (this._rollback_strategy == RollbackStrategy.WasmSnapshots) {
