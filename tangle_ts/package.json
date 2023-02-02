@@ -5,6 +5,9 @@
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist/*"
+  ],
   "scripts": {
     "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap",
     "build_release": "esbuild --mangle-props=^_ src/index.ts --bundle --outfile=dist/index.js --minify --format=esm"
