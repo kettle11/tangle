@@ -131,9 +131,9 @@ export class Room {
 
         this._configuration = room__configuration;
         this._configuration.name ??= "";
-        this._configuration.server_url ??= "192.168.68.109:8081";
+        this._configuration.server_url ??= "tangle-server.fly.dev";
 
-        const server_socket = new WebSocket("ws://" + this._configuration.server_url);
+        const server_socket = new WebSocket("wss://" + this._configuration.server_url);
         server_socket.onopen = () => {
             console.log("[room] Connection established with server");
             console.log("[room] Requesting to join room: ", this._configuration.name);

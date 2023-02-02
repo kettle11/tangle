@@ -1,12 +1,10 @@
 [package]
-name = "warpcore_mvp"
+name = "rust_utilities"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib"]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 #wasm_guardian = {git = "https://github.com/kettle11/wasm_guardian"}
@@ -16,7 +14,7 @@ xxhash-rust = {version = "0.8.5", features = ["xxh3"]}
 once_cell = "1.17.0"
 
 [profile.release]
-# Consider these options for a smaller binary size
+ # Consider these options for a smaller binary size
  # strip = true
  # panic = "abort"
  # opt-level = "z"  # Optimize for size.

@@ -1,21 +1,19 @@
 {
-  "name": "warpcore_ts",
+  "name": "tangle-sync",
   "version": "1.0.0",
-  "description": "To install dependencies:",
-  "main": "index.js",
+  "description": "",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "esbuild src/warp_core.ts --bundle --outfile=../web_example/warp_core.js --format=esm --sourcemap",
-    "build_release": "esbuild --mangle-props=^_ src/warp_core.ts --bundle --outfile=out.js --minify --format=esm"
+    "build": "esbuild src/warp_core.ts --bundle --outfile=dist/index.js --format=esm --sourcemap",
+    "build_release": "esbuild --mangle-props=^_ src/warp_core.ts --bundle --outfile=dist/index.js --minify --format=esm"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
   "devDependencies": {
     "typescript": "^4.9.4"
   },
   "dependencies": {
-    "esbuild": "0.17.3",
-    "monaco-editor": "^0.34.1"
+    "esbuild": "0.17.3"
   }
 }

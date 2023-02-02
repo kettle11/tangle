@@ -297,23 +297,24 @@ export class WarpCore {
             },
             on_peer_left: (peer_id: PeerId, time: number) => {
                 this._run_inner_function(async () => {
-                    console.log("REMOVE PEER");
+                    console.log("REMOVE PEER HERE");
                     this._peer_data.delete(peer_id);
 
+                    // TODO: This is not a good way to synchronize when a peer disconnects.
+                    // It will likely work in some cases but it could also easily desync.
 
-                    time += 500;
+                    time = ((this._warp_core.current_time + 1000) % 500) + this._warp_core.current_time;
                     if (time < this.earliest_safe_memory_time()) {
                         console.error("POTENTIAL DESYNC DUE TO PEER LEAVING!");
-                        // TODO: +500 mitigates, but does not prevent, a desync 
-                        // caused by this event being received after a safe rollback.
-                        // 
                     }
 
                     let time_stamp = {
                         time,
                         player_id: 0 // 0 is for events sent by the server.
                     };
-                    this._warp_core.call_with_time_stamp(time_stamp, "peer_left", [/* TODO PEER ID*/]);
+
+                    console.log("CALLING PEER LEFT");
+                    this._warp_core.call_with_time_stamp(time_stamp, "peer_left", [peer_id]);
                 });
             },
             on_state_change: (state: RoomState) => {

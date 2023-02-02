@@ -2,6 +2,10 @@
 
 <head>
     <style>
+        body {
+            background-color: #E5D1C6;
+        }
+
         .wrapper {
             /* Use flexbox */
             display: flex;
@@ -95,6 +99,7 @@ let balls_previous = new Array<Point>();
 
 let ball_radius = new Array<f64>();
 let ball_color = new Array<Color>();
+let player_ball = new Map<u32, i32>();
 
 class Color {
     r: u8 = 0; g: u8 = 255; b: u8 = 255;
@@ -161,8 +166,35 @@ export function fixed_update(): void {
     }
 }
 
-export function pointer_down(x: u32, y: u32): void {
+export function pointer_down(player_id: u32, x: u32, y: u32): void {
     new_ball(x as f64, y as f64);
+}
+
+export function left(player_id: u32): void {
+    balls_previous[player_ball[player_id]].x += 2;
+}
+
+export function right(player_id: u32): void {
+    balls_previous[player_ball[player_id]].x -= 2;
+}
+
+export function jump(player_id: u32): void {
+    balls_previous[player_ball[player_id]].y += 10;
+}
+
+export function player_joined(player_id: u32): void {
+    new_ball(200, 200);
+    player_ball.set(player_id, balls.length - 1);
+}
+
+export function peer_left(player_id: u32): void {
+    let player_index = player_ball.get(player_id);
+    player_ball.delete(player_id);
+    
+    balls.splice(player_index, 1);
+    balls_previous.splice(player_index, 1);
+    ball_radius.splice(player_index, 1);
+    ball_color.splice(player_index, 1);
 }
 
 export function draw(): void {
@@ -173,7 +205,6 @@ export function draw(): void {
         draw_circle(ball.x, ball.y, ball_radius[i]);
     }
 }
-
 
 class Point {
     x: f64;
@@ -297,8 +328,6 @@ class Point {
             compile_assemblyscript(editor.getValue());
         });
 
-
-
         function compile_assemblyscript(source) {
             // This code is adapted from here: 
             // https://github.com/AssemblyScript/website/blob/main/src/.vuepress/public/editor.html
@@ -364,7 +393,7 @@ class Point {
         };
 
 
-        import { WarpCore, RoomState } from "./warp_core.js";
+        import { WarpCore, RoomState, UserId } from "./warp_core.js";
 
         async function run(wasm_binary) {
             var canvas = document.getElementById("myCanvas");
@@ -428,41 +457,33 @@ class Point {
             };
 
             let player_id = 0;
-            let current_animation_time = performance.now();
+            let current_animation_time = Date.now();//performance.now();
             let fixed_update_rate = 1000 / 60;
-            let start_time = 0;
-            let paused = false;
 
             async function animation(time_now) {
-
+                time_now = Date.now();
                 if (time_now) {
-                    if (!paused) {
-
-                        if (canvas.width != canvas.clientWidth || canvas.height != canvas.clientHeight) {
-                            canvas.width = canvas.clientWidth;
-                            canvas.height = canvas.clientHeight;
-                        }
-                        let diff = time_now - current_animation_time;
-
-                        context.clearRect(0, 0, context.canvas.width, context.canvas.height);
-
-                        await warpcore.progress_time(diff);
-                        await warpcore.call_and_revert("draw", []);
-
-                        current_animation_time = time_now;
+                    if (canvas.width != canvas.clientWidth || canvas.height != canvas.clientHeight) {
+                        canvas.width = canvas.clientWidth;
+                        canvas.height = canvas.clientHeight;
                     }
+                    let diff = time_now - current_animation_time;
+
+                    context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+
+                    await warpcore.progress_time(diff);
+                    await warpcore.call_and_revert("draw", []);
                 }
+
+                current_animation_time = time_now;
                 window.requestAnimationFrame(animation);
             }
 
-            let warpcore = await WarpCore.setup(wasm_binary, imports, fixed_update_rate, (state) => {
+            let warpcore = await WarpCore.setup(wasm_binary, imports, fixed_update_rate, (state, warpcore) => {
                 if (state === RoomState.Connected) {
-                    start_time = Date.now();
+                    // Spawn in the room
+                    warpcore.call("player_joined", [UserId]);
 
-                    //  (async () => {
-                    //      await warpcore.progress_time(100);
-                    //      await warpcore.rewind_time(0);
-                    //  })();
                     animation();
                 }
             });
@@ -470,16 +491,28 @@ class Point {
 
             document.onkeyup = async (event) => {
                 if (event.code == "KeyH") {
-                    // window.warpcore.share_history();
                     compile_assemblyscript(editor.getValue());
                 }
+                if (event.code == "ArrowLeft") {
+                    warpcore.call("left", [UserId]);
+                }
+                if (event.code == "ArrowRight") {
+                    warpcore.call("right", [UserId]);
+                }
+                if (event.code == "Space") {
+                    warpcore.call("jump", [UserId]);
+                }
+
+                if (event.code == "KeyJ") {
+                    //warpcore.call("player_joined", [UserId]);
+                }
+
             };
 
             canvas.onpointerdown = async (event) => {
-                if (!paused) {
-                    await warpcore.call("pointer_down", [event.clientX, event.clientY]);
-                    //await warpcore.call("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255]);
-                }
+                //await warpcore.call("pointer_down", [UserId, event.clientX, event.clientY]);
+                //await warpcore.call("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255]);
+
             };
         };
 

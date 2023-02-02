@@ -112,7 +112,7 @@ export class OfflineWarpCore {
             }
         };
 
-        OfflineWarpCore._warpcore_wasm ??= await WebAssembly.instantiateStreaming(fetch("warpcore_mvp.wasm"), imports_warp_core_wasm);
+        OfflineWarpCore._warpcore_wasm ??= await WebAssembly.instantiateStreaming(fetch("rust_utilities.wasm"), imports_warp_core_wasm);
 
         if (!rollback_strategy) {
             // TODO: Check initial memory size and choose a rollback strategy based on that.
@@ -194,7 +194,7 @@ export class OfflineWarpCore {
         new Uint8Array(old_memory.buffer).set(new_memory_data);
     }
 
-    async reset_with_new_program(wasm_binary: Uint8Array, current_time: number,) {
+    async reset_with_new_program(wasm_binary: Uint8Array, current_time: number) {
         console.log("RESETTING WITH NEW PROGRAM-----------");
 
         wasm_binary = await process_binary(wasm_binary, true, this._rollback_strategy == RollbackStrategy.Granular);
