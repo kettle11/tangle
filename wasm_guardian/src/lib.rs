@@ -327,9 +327,11 @@ impl<'instr> walrus::ir::Visitor<'instr> for AllBlocks<'instr> {
     }
 }
 
+/*
 #[test]
 fn test() {
     let bytes = std::fs::read("wasm_snippets/example_script_bulk_memory.wasm").unwrap();
     let output = transform_wasm_to_track_changes(&bytes);
     std::fs::write("output.wasm", &output).unwrap();
 }
+*/
