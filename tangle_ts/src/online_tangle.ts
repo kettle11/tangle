@@ -1,5 +1,5 @@
 import { PeerId, Room, RoomState } from "./room.js";
-import { arrayEquals, OfflineWarpCore, TimeStamp, time_stamp_compare } from "./offline_warp_core.js";
+import { arrayEquals, OfflineTangle, TimeStamp, time_stamp_compare } from "./offline_tangle.js";
 import { MessageWriterReader } from "./message_encoding.js";
 
 export { RoomState, PeerId } from "./room.js";
@@ -31,7 +31,7 @@ type PeerData = {
 let text_encoder = new TextEncoder();
 let text_decoder = new TextDecoder();
 
-enum WarpCoreState {
+enum TangleState {
     Disconnected,
     Connected,
     RequestingHeap
@@ -40,13 +40,13 @@ enum WarpCoreState {
 class UserIdType { }
 export const UserId = new UserIdType();
 
-export class WarpCore {
+export class Tangle {
     room!: Room;
-    private _warp_core!: OfflineWarpCore;
+    private _tangle!: OfflineTangle;
     private _buffered_messages: Array<FunctionCallMessage> = [];
     private _peer_data: Map<PeerId, PeerData> = new Map();
     private outgoing_message_buffer = new Uint8Array(500);
-    private _warp_core_state = WarpCoreState.Disconnected;
+    private _tangle_state = TangleState.Disconnected;
     private _current_program_binary = new Uint8Array();
     private _block_reentrancy = false;
     private _enqueued_inner_calls = new Array(Function());
@@ -67,10 +67,10 @@ export class WarpCore {
         }
     }
 
-    static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: WarpCoreState, warp_core: WarpCore) => void): Promise<WarpCore> {
-        let warp_core = new WarpCore();
-        await warp_core.setup_inner(wasm_binary, wasm_imports, recurring_call_interval, on_state_change_callback);
-        return warp_core;
+    static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: TangleState, tangle: Tangle) => void): Promise<Tangle> {
+        let tangle = new Tangle();
+        await tangle.setup_inner(wasm_binary, wasm_imports, recurring_call_interval, on_state_change_callback);
+        return tangle;
     }
 
     private request_heap() {
@@ -86,11 +86,11 @@ export class WarpCore {
     private _encode_heap_message(): Uint8Array {
         // TODO: Send all function calls and events here.
 
-        console.log("WASM MODULE SENDING: ", this._warp_core.wasm_instance!.instance.exports);
-        let memory = this._warp_core.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
-        let encoded_data = this._warp_core.gzip_encode(new Uint8Array(memory.buffer));
+        console.log("WASM MODULE SENDING: ", this._tangle.wasm_instance!.instance.exports);
+        let memory = this._tangle.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
+        let encoded_data = this._tangle.gzip_encode(new Uint8Array(memory.buffer));
 
-        let exports = this._warp_core.wasm_instance!.instance.exports;
+        let exports = this._tangle.wasm_instance!.instance.exports;
         let globals_count = 0;
         for (const [key, v] of Object.entries(exports)) {
             if (key.slice(0, 3) == "wg_") {
@@ -100,9 +100,9 @@ export class WarpCore {
         let heap_message = new Uint8Array(encoded_data.byteLength + 1 + 8 + 8 + 4 + (8 + 4 + 1) * globals_count);
         let message_writer = new MessageWriterReader(heap_message);
         message_writer.write_u8(MessageType.SentHeap);
-        message_writer.write_f64(this._warp_core.current_time);
-        message_writer.write_f64(this._warp_core.recurring_call_time);
-        console.log("ENCODING RECURRING CALL TIME: ", this._warp_core.recurring_call_time);
+        message_writer.write_f64(this._tangle.current_time);
+        message_writer.write_f64(this._tangle.recurring_call_time);
+        console.log("ENCODING RECURRING CALL TIME: ", this._tangle.recurring_call_time);
 
         // Encode all mutable globals
         message_writer.write_u16(globals_count);
@@ -133,7 +133,7 @@ export class WarpCore {
         }
 
         // TODO: When implemented all function calls and events need to be decoded here.
-        let heap_data = this._warp_core.gzip_decode(message_reader.read_remaining_raw_bytes());
+        let heap_data = this._tangle.gzip_decode(message_reader.read_remaining_raw_bytes());
 
         return {
             current_time,
@@ -145,7 +145,7 @@ export class WarpCore {
 
 
     private _encode_new_program_message(program_data: Uint8Array): Uint8Array {
-        let encoded_data = this._warp_core.gzip_encode(program_data);
+        let encoded_data = this._tangle.gzip_encode(program_data);
 
         let message = new Uint8Array(encoded_data.byteLength + 1);
         let message_writer = new MessageWriterReader(message);
@@ -156,7 +156,7 @@ export class WarpCore {
     }
 
     private _decode_new_program_message(data_in: Uint8Array) {
-        let data = this._warp_core.gzip_decode(data_in);
+        let data = this._tangle.gzip_decode(data_in);
         return data;
     }
 
@@ -250,11 +250,11 @@ export class WarpCore {
         let message_writer = new MessageWriterReader(data);
         message_writer.write_u8(MessageType.DebugShareHistory);
 
-        let history_length = this._warp_core.function_calls.length;
+        let history_length = this._tangle.function_calls.length;
 
         for (let i = 0; i < history_length; i++) {
 
-            let function_call = this._warp_core.function_calls[i];
+            let function_call = this._tangle.function_calls[i];
             message_writer.write_f64(function_call.time_stamp.time);
             message_writer.write_raw_bytes(function_call.hash_after!);
 
@@ -283,7 +283,7 @@ export class WarpCore {
         return history;
     }
 
-    private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: WarpCoreState, warp_core: WarpCore) => void) {
+    private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: TangleState, tangle: Tangle) => void) {
         let room_configuration = {
             on_peer_joined: (peer_id: PeerId) => {
                 this._run_inner_function(async () => {
@@ -303,7 +303,7 @@ export class WarpCore {
                     // TODO: This is not a good way to synchronize when a peer disconnects.
                     // It will likely work in some cases but it could also easily desync.
 
-                    time = ((this._warp_core.current_time + 1000) % 500) + this._warp_core.current_time;
+                    time = ((this._tangle.current_time + 1000) % 500) + this._tangle.current_time;
                     if (time < this.earliest_safe_memory_time()) {
                         console.error("POTENTIAL DESYNC DUE TO PEER LEAVING!");
                     }
@@ -314,14 +314,14 @@ export class WarpCore {
                     };
 
                     console.log("CALLING PEER LEFT");
-                    this._warp_core.call_with_time_stamp(time_stamp, "peer_left", [peer_id]);
+                    this._tangle.call_with_time_stamp(time_stamp, "peer_left", [peer_id]);
                 });
             },
             on_state_change: (state: RoomState) => {
                 this._run_inner_function(async () => {
                     // TODO: Change this callback to have room passed in.
 
-                    console.log("[warpcore] Room state changed: ", RoomState[state]);
+                    console.log("[tangle] Room state changed: ", RoomState[state]);
 
                     switch (state) {
                         case RoomState.Connected: {
@@ -329,19 +329,19 @@ export class WarpCore {
 
                             if (this._peer_data.size == 0) {
                                 // We have no peer so we're connected
-                                this._warp_core_state = WarpCoreState.Connected;
-                                on_state_change_callback?.(this._warp_core_state, this);
+                                this._tangle_state = TangleState.Connected;
+                                on_state_change_callback?.(this._tangle_state, this);
                             }
                             break;
                         }
                         case RoomState.Disconnected: {
-                            this._warp_core_state = WarpCoreState.Disconnected;
-                            on_state_change_callback?.(this._warp_core_state, this);
+                            this._tangle_state = TangleState.Disconnected;
+                            on_state_change_callback?.(this._tangle_state, this);
                             break;
                         }
                         case RoomState.Joining: {
-                            this._warp_core_state = WarpCoreState.Disconnected;
-                            on_state_change_callback?.(this._warp_core_state, this);
+                            this._tangle_state = TangleState.Disconnected;
+                            on_state_change_callback?.(this._tangle_state, this);
                             break;
                         }
                     }
@@ -377,14 +377,14 @@ export class WarpCore {
                                 player_id: peer_id
                             };
 
-                            if (this._warp_core_state == WarpCoreState.RequestingHeap) {
+                            if (this._tangle_state == TangleState.RequestingHeap) {
                                 this._buffered_messages.push({
                                     function_name: m.function_name,
                                     time_stamp: time_stamp,
                                     args: m.args
                                 });
                             } else {
-                                await this._warp_core.call_with_time_stamp(time_stamp, m.function_name, m.args);
+                                await this._tangle.call_with_time_stamp(time_stamp, m.function_name, m.args);
                             }
 
                             break;
@@ -399,17 +399,17 @@ export class WarpCore {
                             break;
                         }
                         case (MessageType.SentHeap): {
-                            console.log("[warpcore] Setting heap");
+                            console.log("[tangle] Setting heap");
                             let heap_message = this._decode_heap_message(message_data);
 
                             // TODO: Get roundtrip time to peer and increase current_time by half of that.
                             let round_trip_time = this._peer_data.get(peer_id)!.round_trip_time;
-                            console.log("[warpcore] Approximate round trip offset: ", round_trip_time / 2);
+                            console.log("[tangle] Approximate round trip offset: ", round_trip_time / 2);
 
                             let current_time = heap_message.current_time;
 
                             console.log("INITIAL RECURRING CALL TIME: ", heap_message.recurring_call_time);
-                            await this._warp_core.reset_with_wasm_memory(
+                            await this._tangle.reset_with_wasm_memory(
                                 heap_message.heap_data,
                                 heap_message.global_values,
                                 current_time + (round_trip_time / 2),
@@ -417,23 +417,23 @@ export class WarpCore {
                             );
 
                             for (let m of this._buffered_messages) {
-                                await this._warp_core.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
+                                await this._tangle.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
                             }
                             this._buffered_messages = [];
 
-                            this._warp_core_state = WarpCoreState.Connected;
-                            on_state_change_callback?.(this._warp_core_state, this);
+                            this._tangle_state = TangleState.Connected;
+                            on_state_change_callback?.(this._tangle_state, this);
                             break;
                         }
                         case (MessageType.SetProgram): {
                             // TODO: This is incorrect. Make sure all peers are aware of their roundtrip average with each-other
                             let round_trip_time = this._peer_data.get(peer_id)!.round_trip_time;
-                            console.log("[warpcore] Approximate round trip offset: ", round_trip_time / 2);
+                            console.log("[tangle] Approximate round trip offset: ", round_trip_time / 2);
 
                             console.log("SETTING PROGRAM!");
                             let new_program = this._decode_new_program_message(message_data);
                             this._current_program_binary = new_program;
-                            await this._warp_core.reset_with_new_program(new_program, (round_trip_time / 2));
+                            await this._tangle.reset_with_new_program(new_program, (round_trip_time / 2));
                             console.log("DONE SETTING PROGRAM");
                             break;
                         }
@@ -444,8 +444,8 @@ export class WarpCore {
 
                             let i = 0;
                             let j = 0;
-                            while (i < this._warp_core.function_calls.length && j < remote_history.length) {
-                                let f0 = this._warp_core.function_calls[i];
+                            while (i < this._tangle.function_calls.length && j < remote_history.length) {
+                                let f0 = this._tangle.function_calls[i];
                                 let f1 = remote_history[j];
 
                                 let time_stamp1 = {
@@ -489,7 +489,7 @@ export class WarpCore {
                 }, !peer_connected_already);
             }
         };
-        this._warp_core = await OfflineWarpCore.setup(wasm_binary, wasm_imports, recurring_call_interval);
+        this._tangle = await OfflineTangle.setup(wasm_binary, wasm_imports, recurring_call_interval);
         this.room = await Room.setup(room_configuration);
         this._current_program_binary = wasm_binary;
     }
@@ -497,7 +497,7 @@ export class WarpCore {
     set_program(new_program: Uint8Array) {
         this._run_inner_function(async () => {
             //   if (!arrayEquals(new_program, this._current_program_binary)) {
-            await this._warp_core.reset_with_new_program(
+            await this._tangle.reset_with_new_program(
                 new_program,
                 0
             );
@@ -530,7 +530,7 @@ export class WarpCore {
 
             // TODO: Ensure each message has a unique timestamp.
             let time_stamp = {
-                time: this._warp_core.current_time,
+                time: this._tangle.current_time,
                 player_id: this.room.my_id
             };
 
@@ -540,7 +540,7 @@ export class WarpCore {
             // everyone else in the room.
             // time_stamp.time += 50;
 
-            await this._warp_core.call_with_time_stamp(time_stamp, function_name, args_processed);
+            await this._tangle.call_with_time_stamp(time_stamp, function_name, args_processed);
 
             // Network the call
             this.room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, args_processed));
@@ -555,7 +555,7 @@ export class WarpCore {
     call_and_revert(function_name: string, args: Array<number>) {
         this._run_inner_function(async () => {
             let args_processed = this._process_args(args);
-            this._warp_core.call_and_revert(function_name, args_processed);
+            this._tangle.call_and_revert(function_name, args_processed);
         });
     }
 
@@ -567,7 +567,7 @@ export class WarpCore {
     }
 
     private earliest_safe_memory_time(): number {
-        let earliest_safe_memory = this._warp_core.recurring_call_time;
+        let earliest_safe_memory = this._tangle.recurring_call_time;
         for (let [_, value] of this._peer_data) {
             earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
         }
@@ -577,11 +577,11 @@ export class WarpCore {
     private async _progress_time_inner(time_progressed: number) {
         // TODO: Detect if we're falling behind and can't keep up.
 
-        await this._warp_core.progress_time(time_progressed);
+        await this._tangle.progress_time(time_progressed);
 
         // Keep track of when a message was received from each peer
         // and use that to determine what history is safe to throw away.
-        let earliest_safe_memory = this._warp_core.recurring_call_time;
+        let earliest_safe_memory = this._tangle.recurring_call_time;
         for (let [peer_id, value] of this._peer_data) {
             earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
 
@@ -590,13 +590,13 @@ export class WarpCore {
             // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
             // it'd be better to figure out if those could be used instead.
             const KEEP_ALIVE_THRESHOLD = 200;
-            if ((this._warp_core.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
-                this.room.send_message(this._encode_time_progressed_message(this._warp_core.current_time), peer_id);
+            if ((this._tangle.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
+                this.room.send_message(this._encode_time_progressed_message(this._tangle.current_time), peer_id);
             }
         }
 
         // This -100 is for debugging purposes only
-        this._warp_core.remove_history_before(earliest_safe_memory - 100);
+        this._tangle.remove_history_before(earliest_safe_memory - 100);
 
     }
     progress_time(time_progressed: number) {
@@ -605,7 +605,7 @@ export class WarpCore {
         });
     }
     get_memory(): WebAssembly.Memory {
-        return this._warp_core.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
+        return this._tangle.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
     }
 }
 

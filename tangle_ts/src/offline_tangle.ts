@@ -73,10 +73,10 @@ type UpcomingFunctionCall = {
     time_stamp: TimeStamp,
 }
 
-export class OfflineWarpCore {
-    /// The Wasm code used by WarpCore itself.
-    static _warpcore_wasm?: WebAssembly.WebAssemblyInstantiatedSource;
-    /// The user Wasm that WarpCore is syncing 
+export class OfflineTangle {
+    /// The Wasm code used by Tangle itself.
+    static _tangle_wasm?: WebAssembly.WebAssemblyInstantiatedSource;
+    /// The user Wasm that Tangle is syncing 
     wasm_instance?: WebAssembly.WebAssemblyInstantiatedSource = undefined;
     current_time: number = 0;
     private _recurring_call_interval: number = 0;
@@ -92,19 +92,19 @@ export class OfflineWarpCore {
     // Optionally track hashes after each function call
     hash_tracking: boolean = true;
 
-    static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports, recurring_call_interval: number, rollback_strategy?: RollbackStrategy): Promise<OfflineWarpCore> {
+    static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports, recurring_call_interval: number, rollback_strategy?: RollbackStrategy): Promise<OfflineTangle> {
         let decoder = new TextDecoder();
 
-        let imports_warp_core_wasm: WebAssembly.Imports = {
+        let imports_tangle_wasm: WebAssembly.Imports = {
             env: {
                 external_log: function (pointer: number, length: number) {
-                    let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
+                    let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
                     const message_data = new Uint8Array(memory.buffer, pointer, length);
                     const decoded_string = decoder.decode(new Uint8Array(message_data));
                     console.log(decoded_string);
                 },
                 external_error: function (pointer: number, length: number) {
-                    let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
+                    let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
                     const message_data = new Uint8Array(memory.buffer, pointer, length);
                     const decoded_string = decoder.decode(new Uint8Array(message_data));
                     console.error(decoded_string);
@@ -112,56 +112,56 @@ export class OfflineWarpCore {
             }
         };
 
-        OfflineWarpCore._warpcore_wasm ??= await WebAssembly.instantiateStreaming(fetch("rust_utilities.wasm"), imports_warp_core_wasm);
+        OfflineTangle._tangle_wasm ??= await WebAssembly.instantiateStreaming(fetch("rust_utilities.wasm"), imports_tangle_wasm);
 
         if (!rollback_strategy) {
             // TODO: Check initial memory size and choose a rollback strategy based on that.
             rollback_strategy = RollbackStrategy.WasmSnapshots;
         }
 
-        let warpcore = new OfflineWarpCore();
-        warpcore._rollback_strategy = rollback_strategy;
-        warpcore._recurring_call_interval = recurring_call_interval;
-        warpcore._imports = imports;
+        let tangle = new OfflineTangle();
+        tangle._rollback_strategy = rollback_strategy;
+        tangle._recurring_call_interval = recurring_call_interval;
+        tangle._imports = imports;
 
         wasm_binary = await process_binary(wasm_binary, true, rollback_strategy == RollbackStrategy.Granular);
 
         if (rollback_strategy == RollbackStrategy.Granular) {
 
-            warpcore._imports.wasm_guardian = {
+            tangle._imports.wasm_guardian = {
                 on_store: (location: number, size: number) => {
-                    // console.log("HASH BEFORE STORE: ", warpcore.hash());
+                    // console.log("HASH BEFORE STORE: ", tangle.hash());
 
                     //  console.log("on_store called: ", location, size);
-                    if ((location + size) > (warpcore.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer.byteLength) {
+                    if ((location + size) > (tangle.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer.byteLength) {
                         console.log("OUT OF BOUNDS MEMORY SIZE IN PAGES: ", (location + size) / WASM_PAGE_SIZE);
                         console.error("MEMORY OUT OF BOUNDS!: ", location + size);
                     } else {
-                        let memory = warpcore.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
+                        let memory = tangle.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
                         let old_value = new Uint8Array(new Uint8Array(memory.buffer, location, size));
-                        warpcore._actions.push({ action_type: WasmActionType.Store, location: location, old_value: old_value, /* hash_before: warpcore.hash() */ });
+                        tangle._actions.push({ action_type: WasmActionType.Store, location: location, old_value: old_value, /* hash_before: tangle.hash() */ });
                     }
                 },
                 on_grow: (pages: number) => {
                     console.log("on_grow called: ", pages);
-                    let memory = warpcore.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
+                    let memory = tangle.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
                     console.log("NEW MEMORY SIZE IN PAGES: ", (memory.buffer.byteLength / WASM_PAGE_SIZE) + 1);
 
-                    warpcore._actions.push({ action_type: WasmActionType.Grow, old_page_count: memory.buffer.byteLength / WASM_PAGE_SIZE, /* hash_before: warpcore.hash() */ });
+                    tangle._actions.push({ action_type: WasmActionType.Grow, old_page_count: memory.buffer.byteLength / WASM_PAGE_SIZE, /* hash_before: tangle.hash() */ });
                 },
                 on_global_set: (id: number) => {
                     //  console.log("on_global_set called: ", id);
                     let global_id = "wg_global_" + id;
-                    warpcore._actions.push({ action_type: WasmActionType.GlobalSet, global_id: global_id, old_value: warpcore.wasm_instance?.instance.exports[global_id] });
+                    tangle._actions.push({ action_type: WasmActionType.GlobalSet, global_id: global_id, old_value: tangle.wasm_instance?.instance.exports[global_id] });
                 },
             };
         }
-        let wasm_instance = await WebAssembly.instantiate(wasm_binary, warpcore._imports);
+        let wasm_instance = await WebAssembly.instantiate(wasm_binary, tangle._imports);
 
         console.log("HEAP SIZE: ", (wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer.byteLength);
-        warpcore.wasm_instance = wasm_instance;
+        tangle.wasm_instance = wasm_instance;
 
-        return warpcore;
+        return tangle;
     }
 
     async assign_memory(new_memory_data: Uint8Array) {
@@ -210,7 +210,7 @@ export class OfflineWarpCore {
         this.recurring_call_time = 0;
     }
 
-    /// Restarts the WarpCore with a new memory.
+    /// Restarts the Tangle with a new memory.
     async reset_with_wasm_memory(new_memory_data: Uint8Array, new_globals_data: Map<number, number>, current_time: number, recurring_call_time: number) {
         this.assign_memory(new_memory_data);
 
@@ -333,7 +333,7 @@ export class OfflineWarpCore {
 
             let time_now = performance.now();
             if ((start_time - time_now) > (time_progressed * 0.75)) {
-                console.log("[warpcore] Bailing out of simulation to avoid missed frames")
+                console.log("[tangle] Bailing out of simulation to avoid missed frames")
                 break;
             }
         }
@@ -501,8 +501,8 @@ export class OfflineWarpCore {
 
     // TODO: These are just helpers and aren't that related to the rest of the code in this:
     gzip_encode(data_to_compress: Uint8Array) {
-        let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
-        let exports = OfflineWarpCore._warpcore_wasm!.instance.exports;
+        let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
+        let exports = OfflineTangle._tangle_wasm!.instance.exports;
 
         let pointer = (exports.reserve_space as CallableFunction)(data_to_compress.byteLength);
         const destination = new Uint8Array(memory.buffer, pointer, data_to_compress.byteLength);
@@ -517,8 +517,8 @@ export class OfflineWarpCore {
     }
 
     gzip_decode(data_to_decode: Uint8Array) {
-        let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
-        let instance = OfflineWarpCore._warpcore_wasm!.instance.exports;
+        let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
+        let instance = OfflineTangle._tangle_wasm!.instance.exports;
 
         let pointer = (instance.reserve_space as CallableFunction)(data_to_decode.byteLength);
         const destination = new Uint8Array(memory.buffer, pointer, data_to_decode.byteLength);
@@ -543,8 +543,8 @@ export class OfflineWarpCore {
     }
     */
     hash_data(data_to_hash: Uint8Array): Uint8Array {
-        let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
-        let instance = OfflineWarpCore._warpcore_wasm!.instance.exports;
+        let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
+        let instance = OfflineTangle._tangle_wasm!.instance.exports;
 
         let pointer = (instance.reserve_space as CallableFunction)(data_to_hash.byteLength);
         const destination = new Uint8Array(memory.buffer, pointer, data_to_hash.byteLength);
@@ -562,17 +562,17 @@ async function process_binary(wasm_binary: Uint8Array, export_globals: boolean, 
     }
 
     let length = wasm_binary.byteLength;
-    let pointer = (OfflineWarpCore._warpcore_wasm?.instance.exports.reserve_space as CallableFunction)(length);
+    let pointer = (OfflineTangle._tangle_wasm?.instance.exports.reserve_space as CallableFunction)(length);
 
-    let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory as WebAssembly.Memory;
+    let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
 
     const data_location = new Uint8Array(memory.buffer, pointer, length);
     data_location.set(new Uint8Array(wasm_binary));
-    (OfflineWarpCore._warpcore_wasm?.instance.exports.prepare_wasm as CallableFunction)(export_globals, track_changes);
+    (OfflineTangle._tangle_wasm?.instance.exports.prepare_wasm as CallableFunction)(export_globals, track_changes);
 
     // TODO: Write these to an output buffer instead of having two calls for them.
-    let output_ptr = (OfflineWarpCore._warpcore_wasm?.instance.exports.get_output_ptr as CallableFunction)();
-    let output_len = (OfflineWarpCore._warpcore_wasm?.instance.exports.get_output_len as CallableFunction)();
+    let output_ptr = (OfflineTangle._tangle_wasm?.instance.exports.get_output_ptr as CallableFunction)();
+    let output_len = (OfflineTangle._tangle_wasm?.instance.exports.get_output_len as CallableFunction)();
     const output_wasm = new Uint8Array(memory.buffer, output_ptr, output_len);
     return output_wasm;
 }

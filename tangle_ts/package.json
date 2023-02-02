@@ -5,8 +5,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "esbuild src/warp_core.ts --bundle --outfile=dist/index.js --format=esm --sourcemap",
-    "build_release": "esbuild --mangle-props=^_ src/warp_core.ts --bundle --outfile=dist/index.js --minify --format=esm"
+    "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap",
+    "build_release": "esbuild --mangle-props=^_ src/index.ts --bundle --outfile=dist/index.js --minify --format=esm"
   },
   "keywords": [],
   "author": "",

@@ -1,6 +1,6 @@
 */target
 /web_example/kenney_pixelplatformer/
 /web_example/*.wasm
-/web_example/warp_core.js
-/web_example/warp_core.js.map
+/web_example/tangle.js
+/web_example/tangle.js.map
 .DS_Store

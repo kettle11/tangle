@@ -82,7 +82,7 @@
     <script src=" https://cdn.jsdelivr.net/npm/@monaco-editor/loader@1.3.2/lib/umd/monaco-loader.min.js">
     </script>
     <script src="https://cdn.jsdelivr.net/npm/assemblyscript@0.26.6/dist/web.js"></script>
-    <script src="warp_core.js" type="module"></script>
+    <script src="tangle.js" type="module"></script>
     <script type="module">
         let initial_code =
             `@external("env", "set_color")
@@ -372,7 +372,7 @@ class Point {
                 } else {
                     let module_wasm = outputs[wasmModule]
 
-                    if (!window.warpcore) {
+                    if (!window.tangle) {
                         run(module_wasm);
                         return;
                     }
@@ -382,7 +382,7 @@ class Point {
                     errors_box_element.style.backgroundColor = "#4eda57";
 
                     console.log("OUTPUTS: ", outputs);
-                    window.warpcore.set_program(module_wasm);
+                    window.tangle.set_program(module_wasm);
 
                     // module_js = outputs[jsModule]
                     // binaryEditor.setValue(output + module_wast)
@@ -393,7 +393,7 @@ class Point {
         };
 
 
-        import { WarpCore, RoomState, UserId } from "./warp_core.js";
+        import { Tangle, RoomState, UserId } from "./tangle.js";
 
         async function run(wasm_binary) {
             var canvas = document.getElementById("myCanvas");
@@ -415,7 +415,7 @@ class Point {
             let imports = {
                 env: {
                     external_log: function (pointer, length) {
-                        let memory = warpcore.get_memory();
+                        let memory = tangle.get_memory();
                         console.log("EXTERNAL LOG CALLED");
 
                         const message_data = new Uint8Array(memory.buffer, pointer, length);
@@ -471,47 +471,47 @@ class Point {
 
                     context.clearRect(0, 0, context.canvas.width, context.canvas.height);
 
-                    await warpcore.progress_time(diff);
-                    await warpcore.call_and_revert("draw", []);
+                    await tangle.progress_time(diff);
+                    await tangle.call_and_revert("draw", []);
                 }
 
                 current_animation_time = time_now;
                 window.requestAnimationFrame(animation);
             }
 
-            let warpcore = await WarpCore.setup(wasm_binary, imports, fixed_update_rate, (state, warpcore) => {
+            let tangle = await Tangle.setup(wasm_binary, imports, fixed_update_rate, (state, tangle) => {
                 if (state === RoomState.Connected) {
                     // Spawn in the room
-                    warpcore.call("player_joined", [UserId]);
+                    tangle.call("player_joined", [UserId]);
 
                     animation();
                 }
             });
-            window.warpcore = warpcore;
+            window.tangle = tangle;
 
             document.onkeyup = async (event) => {
                 if (event.code == "KeyH") {
                     compile_assemblyscript(editor.getValue());
                 }
                 if (event.code == "ArrowLeft") {
-                    warpcore.call("left", [UserId]);
+                    tangle.call("left", [UserId]);
                 }
                 if (event.code == "ArrowRight") {
-                    warpcore.call("right", [UserId]);
+                    tangle.call("right", [UserId]);
                 }
                 if (event.code == "Space") {
-                    warpcore.call("jump", [UserId]);
+                    tangle.call("jump", [UserId]);
                 }
 
                 if (event.code == "KeyJ") {
-                    //warpcore.call("player_joined", [UserId]);
+                    //tangle.call("player_joined", [UserId]);
                 }
 
             };
 
             canvas.onpointerdown = async (event) => {
-                //await warpcore.call("pointer_down", [UserId, event.clientX, event.clientY]);
-                //await warpcore.call("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255]);
+                //await tangle.call("pointer_down", [UserId, event.clientX, event.clientY]);
+                //await tangle.call("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255]);
 
             };
         };

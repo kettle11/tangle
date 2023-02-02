@@ -249,7 +249,7 @@ var Room = class {
   }
 };
 
-// src/offline_warp_core.ts
+// src/offline_tangle.ts
 var WASM_PAGE_SIZE = 65536;
 function time_stamp_compare(a, b) {
   let v = Math.sign(a.time - b.time);
@@ -262,9 +262,9 @@ function time_stamp_compare(a, b) {
   }
   return 0;
 }
-var OfflineWarpCore = class {
+var OfflineTangle = class {
   constructor() {
-    /// The user Wasm that WarpCore is syncing 
+    /// The user Wasm that Tangle is syncing 
     this.wasm_instance = void 0;
     this.current_time = 0;
     this._recurring_call_interval = 0;
@@ -280,68 +280,68 @@ var OfflineWarpCore = class {
   }
   static async setup(wasm_binary, imports, recurring_call_interval, rollback_strategy) {
     let decoder = new TextDecoder();
-    let imports_warp_core_wasm = {
+    let imports_tangle_wasm = {
       env: {
         external_log: function(pointer, length2) {
-          let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory;
+          let memory = OfflineTangle._tangle_wasm?.instance.exports.memory;
           const message_data = new Uint8Array(memory.buffer, pointer, length2);
           const decoded_string = decoder.decode(new Uint8Array(message_data));
           console.log(decoded_string);
         },
         external_error: function(pointer, length2) {
-          let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory;
+          let memory = OfflineTangle._tangle_wasm?.instance.exports.memory;
           const message_data = new Uint8Array(memory.buffer, pointer, length2);
           const decoded_string = decoder.decode(new Uint8Array(message_data));
           console.error(decoded_string);
         }
       }
     };
-    OfflineWarpCore._warpcore_wasm ?? (OfflineWarpCore._warpcore_wasm = await WebAssembly.instantiateStreaming(fetch("rust_utilities.wasm"), imports_warp_core_wasm));
+    OfflineTangle._tangle_wasm ?? (OfflineTangle._tangle_wasm = await WebAssembly.instantiateStreaming(fetch("rust_utilities.wasm"), imports_tangle_wasm));
     if (!rollback_strategy) {
       rollback_strategy = 0 /* WasmSnapshots */;
     }
-    let warpcore = new OfflineWarpCore();
-    warpcore._rollback_strategy = rollback_strategy;
-    warpcore._recurring_call_interval = recurring_call_interval;
-    warpcore._imports = imports;
+    let tangle = new OfflineTangle();
+    tangle._rollback_strategy = rollback_strategy;
+    tangle._recurring_call_interval = recurring_call_interval;
+    tangle._imports = imports;
     wasm_binary = await process_binary(wasm_binary, true, rollback_strategy == 1 /* Granular */);
     if (rollback_strategy == 1 /* Granular */) {
-      warpcore._imports.wasm_guardian = {
+      tangle._imports.wasm_guardian = {
         on_store: (location2, size) => {
-          if (location2 + size > warpcore.wasm_instance.instance.exports.memory.buffer.byteLength) {
+          if (location2 + size > tangle.wasm_instance.instance.exports.memory.buffer.byteLength) {
             console.log("OUT OF BOUNDS MEMORY SIZE IN PAGES: ", (location2 + size) / WASM_PAGE_SIZE);
             console.error("MEMORY OUT OF BOUNDS!: ", location2 + size);
           } else {
-            let memory = warpcore.wasm_instance.instance.exports.memory;
+            let memory = tangle.wasm_instance.instance.exports.memory;
             let old_value = new Uint8Array(new Uint8Array(memory.buffer, location2, size));
-            warpcore._actions.push({
+            tangle._actions.push({
               action_type: 0 /* Store */,
               location: location2,
               old_value
-              /* hash_before: warpcore.hash() */
+              /* hash_before: tangle.hash() */
             });
           }
         },
         on_grow: (pages) => {
           console.log("on_grow called: ", pages);
-          let memory = warpcore.wasm_instance.instance.exports.memory;
+          let memory = tangle.wasm_instance.instance.exports.memory;
           console.log("NEW MEMORY SIZE IN PAGES: ", memory.buffer.byteLength / WASM_PAGE_SIZE + 1);
-          warpcore._actions.push({
+          tangle._actions.push({
             action_type: 1 /* Grow */,
             old_page_count: memory.buffer.byteLength / WASM_PAGE_SIZE
-            /* hash_before: warpcore.hash() */
+            /* hash_before: tangle.hash() */
           });
         },
         on_global_set: (id) => {
           let global_id = "wg_global_" + id;
-          warpcore._actions.push({ action_type: 2 /* GlobalSet */, global_id, old_value: warpcore.wasm_instance?.instance.exports[global_id] });
+          tangle._actions.push({ action_type: 2 /* GlobalSet */, global_id, old_value: tangle.wasm_instance?.instance.exports[global_id] });
         }
       };
     }
-    let wasm_instance = await WebAssembly.instantiate(wasm_binary, warpcore._imports);
+    let wasm_instance = await WebAssembly.instantiate(wasm_binary, tangle._imports);
     console.log("HEAP SIZE: ", wasm_instance.instance.exports.memory.buffer.byteLength);
-    warpcore.wasm_instance = wasm_instance;
-    return warpcore;
+    tangle.wasm_instance = wasm_instance;
+    return tangle;
   }
   async assign_memory(new_memory_data) {
     let mem = this.wasm_instance?.instance.exports.memory;
@@ -372,7 +372,7 @@ var OfflineWarpCore = class {
     this.current_time = current_time;
     this.recurring_call_time = 0;
   }
-  /// Restarts the WarpCore with a new memory.
+  /// Restarts the Tangle with a new memory.
   async reset_with_wasm_memory(new_memory_data, new_globals_data, current_time, recurring_call_time) {
     this.assign_memory(new_memory_data);
     let exports = this.wasm_instance.instance.exports;
@@ -448,7 +448,7 @@ var OfflineWarpCore = class {
       await this._call_inner(function_call.function_name, function_call.time_stamp, function_call.args);
       let time_now = performance.now();
       if (start_time - time_now > time_progressed * 0.75) {
-        console.log("[warpcore] Bailing out of simulation to avoid missed frames");
+        console.log("[tangle] Bailing out of simulation to avoid missed frames");
         break;
       }
     }
@@ -563,8 +563,8 @@ var OfflineWarpCore = class {
   }
   // TODO: These are just helpers and aren't that related to the rest of the code in this:
   gzip_encode(data_to_compress) {
-    let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory;
-    let exports = OfflineWarpCore._warpcore_wasm.instance.exports;
+    let memory = OfflineTangle._tangle_wasm?.instance.exports.memory;
+    let exports = OfflineTangle._tangle_wasm.instance.exports;
     let pointer = exports.reserve_space(data_to_compress.byteLength);
     const destination = new Uint8Array(memory.buffer, pointer, data_to_compress.byteLength);
     destination.set(new Uint8Array(data_to_compress));
@@ -576,8 +576,8 @@ var OfflineWarpCore = class {
     return result_data;
   }
   gzip_decode(data_to_decode) {
-    let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory;
-    let instance = OfflineWarpCore._warpcore_wasm.instance.exports;
+    let memory = OfflineTangle._tangle_wasm?.instance.exports.memory;
+    let instance = OfflineTangle._tangle_wasm.instance.exports;
     let pointer = instance.reserve_space(data_to_decode.byteLength);
     const destination = new Uint8Array(memory.buffer, pointer, data_to_decode.byteLength);
     destination.set(data_to_decode);
@@ -600,8 +600,8 @@ var OfflineWarpCore = class {
   }
   */
   hash_data(data_to_hash) {
-    let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory;
-    let instance = OfflineWarpCore._warpcore_wasm.instance.exports;
+    let memory = OfflineTangle._tangle_wasm?.instance.exports.memory;
+    let instance = OfflineTangle._tangle_wasm.instance.exports;
     let pointer = instance.reserve_space(data_to_hash.byteLength);
     const destination = new Uint8Array(memory.buffer, pointer, data_to_hash.byteLength);
     destination.set(new Uint8Array(data_to_hash));
@@ -615,13 +615,13 @@ async function process_binary(wasm_binary, export_globals, track_changes) {
     return wasm_binary;
   }
   let length2 = wasm_binary.byteLength;
-  let pointer = (OfflineWarpCore._warpcore_wasm?.instance.exports.reserve_space)(length2);
-  let memory = OfflineWarpCore._warpcore_wasm?.instance.exports.memory;
+  let pointer = (OfflineTangle._tangle_wasm?.instance.exports.reserve_space)(length2);
+  let memory = OfflineTangle._tangle_wasm?.instance.exports.memory;
   const data_location = new Uint8Array(memory.buffer, pointer, length2);
   data_location.set(new Uint8Array(wasm_binary));
-  (OfflineWarpCore._warpcore_wasm?.instance.exports.prepare_wasm)(export_globals, track_changes);
-  let output_ptr = (OfflineWarpCore._warpcore_wasm?.instance.exports.get_output_ptr)();
-  let output_len = (OfflineWarpCore._warpcore_wasm?.instance.exports.get_output_len)();
+  (OfflineTangle._tangle_wasm?.instance.exports.prepare_wasm)(export_globals, track_changes);
+  let output_ptr = (OfflineTangle._tangle_wasm?.instance.exports.get_output_ptr)();
+  let output_len = (OfflineTangle._tangle_wasm?.instance.exports.get_output_len)();
   const output_wasm = new Uint8Array(memory.buffer, output_ptr, output_len);
   return output_wasm;
 }
@@ -750,18 +750,18 @@ var NumberTag = /* @__PURE__ */ ((NumberTag2) => {
   return NumberTag2;
 })(NumberTag || {});
 
-// src/warp_core.ts
+// src/online_tangle.ts
 var text_encoder2 = new TextEncoder();
 var text_decoder2 = new TextDecoder();
 var UserIdType = class {
 };
 var UserId = new UserIdType();
-var WarpCore = class {
+var Tangle = class {
   constructor() {
     this._buffered_messages = [];
     this._peer_data = /* @__PURE__ */ new Map();
     this.outgoing_message_buffer = new Uint8Array(500);
-    this._warp_core_state = 0 /* Disconnected */;
+    this._tangle_state = 0 /* Disconnected */;
     this._current_program_binary = new Uint8Array();
     this._block_reentrancy = false;
     this._enqueued_inner_calls = new Array(Function());
@@ -782,9 +782,9 @@ var WarpCore = class {
     }
   }
   static async setup(wasm_binary, wasm_imports, recurring_call_interval, on_state_change_callback) {
-    let warp_core = new WarpCore();
-    await warp_core.setup_inner(wasm_binary, wasm_imports, recurring_call_interval, on_state_change_callback);
-    return warp_core;
+    let tangle = new Tangle();
+    await tangle.setup_inner(wasm_binary, wasm_imports, recurring_call_interval, on_state_change_callback);
+    return tangle;
   }
   request_heap() {
     let lowest_latency_peer = this.room.get_lowest_latency_peer();
@@ -795,10 +795,10 @@ var WarpCore = class {
   }
   /// This actually encodes globals as well, not just the heap.
   _encode_heap_message() {
-    console.log("WASM MODULE SENDING: ", this._warp_core.wasm_instance.instance.exports);
-    let memory = this._warp_core.wasm_instance.instance.exports.memory;
-    let encoded_data = this._warp_core.gzip_encode(new Uint8Array(memory.buffer));
-    let exports = this._warp_core.wasm_instance.instance.exports;
+    console.log("WASM MODULE SENDING: ", this._tangle.wasm_instance.instance.exports);
+    let memory = this._tangle.wasm_instance.instance.exports.memory;
+    let encoded_data = this._tangle.gzip_encode(new Uint8Array(memory.buffer));
+    let exports = this._tangle.wasm_instance.instance.exports;
     let globals_count = 0;
     for (const [key, v] of Object.entries(exports)) {
       if (key.slice(0, 3) == "wg_") {
@@ -808,9 +808,9 @@ var WarpCore = class {
     let heap_message = new Uint8Array(encoded_data.byteLength + 1 + 8 + 8 + 4 + (8 + 4 + 1) * globals_count);
     let message_writer = new MessageWriterReader(heap_message);
     message_writer.write_u8(2 /* SentHeap */);
-    message_writer.write_f64(this._warp_core.current_time);
-    message_writer.write_f64(this._warp_core.recurring_call_time);
-    console.log("ENCODING RECURRING CALL TIME: ", this._warp_core.recurring_call_time);
+    message_writer.write_f64(this._tangle.current_time);
+    message_writer.write_f64(this._tangle.recurring_call_time);
+    console.log("ENCODING RECURRING CALL TIME: ", this._tangle.recurring_call_time);
     message_writer.write_u16(globals_count);
     for (const [key, v] of Object.entries(exports)) {
       if (key.slice(0, 3) == "wg_") {
@@ -833,7 +833,7 @@ var WarpCore = class {
       let value = message_reader.read_tagged_number();
       global_values.set(index, value);
     }
-    let heap_data = this._warp_core.gzip_decode(message_reader.read_remaining_raw_bytes());
+    let heap_data = this._tangle.gzip_decode(message_reader.read_remaining_raw_bytes());
     return {
       current_time,
       recurring_call_time,
@@ -842,7 +842,7 @@ var WarpCore = class {
     };
   }
   _encode_new_program_message(program_data) {
-    let encoded_data = this._warp_core.gzip_encode(program_data);
+    let encoded_data = this._tangle.gzip_encode(program_data);
     let message = new Uint8Array(encoded_data.byteLength + 1);
     let message_writer = new MessageWriterReader(message);
     message_writer.write_u8(4 /* SetProgram */);
@@ -850,7 +850,7 @@ var WarpCore = class {
     return message;
   }
   _decode_new_program_message(data_in) {
-    let data = this._warp_core.gzip_decode(data_in);
+    let data = this._tangle.gzip_decode(data_in);
     return data;
   }
   _encode_wasm_call_message(function_string, time, args, hash) {
@@ -908,9 +908,9 @@ var WarpCore = class {
     let data = new Uint8Array(5e4);
     let message_writer = new MessageWriterReader(data);
     message_writer.write_u8(5 /* DebugShareHistory */);
-    let history_length = this._warp_core.function_calls.length;
+    let history_length = this._tangle.function_calls.length;
     for (let i = 0; i < history_length; i++) {
-      let function_call = this._warp_core.function_calls[i];
+      let function_call = this._tangle.function_calls[i];
       message_writer.write_f64(function_call.time_stamp.time);
       message_writer.write_raw_bytes(function_call.hash_after);
       message_writer.write_string(function_call.name);
@@ -948,7 +948,7 @@ var WarpCore = class {
         this._run_inner_function(async () => {
           console.log("REMOVE PEER HERE");
           this._peer_data.delete(peer_id);
-          time = (this._warp_core.current_time + 1e3) % 500 + this._warp_core.current_time;
+          time = (this._tangle.current_time + 1e3) % 500 + this._tangle.current_time;
           if (time < this.earliest_safe_memory_time()) {
             console.error("POTENTIAL DESYNC DUE TO PEER LEAVING!");
           }
@@ -958,29 +958,29 @@ var WarpCore = class {
             // 0 is for events sent by the server.
           };
           console.log("CALLING PEER LEFT");
-          this._warp_core.call_with_time_stamp(time_stamp, "peer_left", [peer_id]);
+          this._tangle.call_with_time_stamp(time_stamp, "peer_left", [peer_id]);
         });
       },
       on_state_change: (state) => {
         this._run_inner_function(async () => {
-          console.log("[warpcore] Room state changed: ", RoomState[state]);
+          console.log("[tangle] Room state changed: ", RoomState[state]);
           switch (state) {
             case 1 /* Connected */: {
               this.request_heap();
               if (this._peer_data.size == 0) {
-                this._warp_core_state = 1 /* Connected */;
-                on_state_change_callback?.(this._warp_core_state, this);
+                this._tangle_state = 1 /* Connected */;
+                on_state_change_callback?.(this._tangle_state, this);
               }
               break;
             }
             case 2 /* Disconnected */: {
-              this._warp_core_state = 0 /* Disconnected */;
-              on_state_change_callback?.(this._warp_core_state, this);
+              this._tangle_state = 0 /* Disconnected */;
+              on_state_change_callback?.(this._tangle_state, this);
               break;
             }
             case 0 /* Joining */: {
-              this._warp_core_state = 0 /* Disconnected */;
-              on_state_change_callback?.(this._warp_core_state, this);
+              this._tangle_state = 0 /* Disconnected */;
+              on_state_change_callback?.(this._tangle_state, this);
               break;
             }
           }
@@ -1007,14 +1007,14 @@ var WarpCore = class {
                 time: m.time,
                 player_id: peer_id
               };
-              if (this._warp_core_state == 2 /* RequestingHeap */) {
+              if (this._tangle_state == 2 /* RequestingHeap */) {
                 this._buffered_messages.push({
                   function_name: m.function_name,
                   time_stamp,
                   args: m.args
                 });
               } else {
-                await this._warp_core.call_with_time_stamp(time_stamp, m.function_name, m.args);
+                await this._tangle.call_with_time_stamp(time_stamp, m.function_name, m.args);
               }
               break;
             }
@@ -1026,33 +1026,33 @@ var WarpCore = class {
               break;
             }
             case 2 /* SentHeap */: {
-              console.log("[warpcore] Setting heap");
+              console.log("[tangle] Setting heap");
               let heap_message = this._decode_heap_message(message_data);
               let round_trip_time = this._peer_data.get(peer_id).round_trip_time;
-              console.log("[warpcore] Approximate round trip offset: ", round_trip_time / 2);
+              console.log("[tangle] Approximate round trip offset: ", round_trip_time / 2);
               let current_time = heap_message.current_time;
               console.log("INITIAL RECURRING CALL TIME: ", heap_message.recurring_call_time);
-              await this._warp_core.reset_with_wasm_memory(
+              await this._tangle.reset_with_wasm_memory(
                 heap_message.heap_data,
                 heap_message.global_values,
                 current_time + round_trip_time / 2,
                 heap_message.recurring_call_time
               );
               for (let m of this._buffered_messages) {
-                await this._warp_core.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
+                await this._tangle.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
               }
               this._buffered_messages = [];
-              this._warp_core_state = 1 /* Connected */;
-              on_state_change_callback?.(this._warp_core_state, this);
+              this._tangle_state = 1 /* Connected */;
+              on_state_change_callback?.(this._tangle_state, this);
               break;
             }
             case 4 /* SetProgram */: {
               let round_trip_time = this._peer_data.get(peer_id).round_trip_time;
-              console.log("[warpcore] Approximate round trip offset: ", round_trip_time / 2);
+              console.log("[tangle] Approximate round trip offset: ", round_trip_time / 2);
               console.log("SETTING PROGRAM!");
               let new_program = this._decode_new_program_message(message_data);
               this._current_program_binary = new_program;
-              await this._warp_core.reset_with_new_program(new_program, round_trip_time / 2);
+              await this._tangle.reset_with_new_program(new_program, round_trip_time / 2);
               console.log("DONE SETTING PROGRAM");
               break;
             }
@@ -1062,8 +1062,8 @@ var WarpCore = class {
               console.log("SHARED HISTORY: ", this._decode_share_history(message_data));
               let i = 0;
               let j = 0;
-              while (i < this._warp_core.function_calls.length && j < remote_history.length) {
-                let f0 = this._warp_core.function_calls[i];
+              while (i < this._tangle.function_calls.length && j < remote_history.length) {
+                let f0 = this._tangle.function_calls[i];
                 let f1 = remote_history[j];
                 let time_stamp1 = {
                   time: f1.time,
@@ -1104,13 +1104,13 @@ var WarpCore = class {
         }, !peer_connected_already);
       }
     };
-    this._warp_core = await OfflineWarpCore.setup(wasm_binary, wasm_imports, recurring_call_interval);
+    this._tangle = await OfflineTangle.setup(wasm_binary, wasm_imports, recurring_call_interval);
     this.room = await Room.setup(room_configuration);
     this._current_program_binary = wasm_binary;
   }
   set_program(new_program) {
     this._run_inner_function(async () => {
-      await this._warp_core.reset_with_new_program(
+      await this._tangle.reset_with_new_program(
         new_program,
         0
       );
@@ -1132,10 +1132,10 @@ var WarpCore = class {
     this._run_inner_function(async () => {
       let args_processed = this._process_args(args);
       let time_stamp = {
-        time: this._warp_core.current_time,
+        time: this._tangle.current_time,
         player_id: this.room.my_id
       };
-      await this._warp_core.call_with_time_stamp(time_stamp, function_name, args_processed);
+      await this._tangle.call_with_time_stamp(time_stamp, function_name, args_processed);
       this.room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, args_processed));
       for (let [_, value] of this._peer_data) {
         value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
@@ -1146,7 +1146,7 @@ var WarpCore = class {
   call_and_revert(function_name, args) {
     this._run_inner_function(async () => {
       let args_processed = this._process_args(args);
-      this._warp_core.call_and_revert(function_name, args_processed);
+      this._tangle.call_and_revert(function_name, args_processed);
     });
   }
   /// Resync with the room, immediately catching up.
@@ -1155,23 +1155,23 @@ var WarpCore = class {
     this.request_heap();
   }
   earliest_safe_memory_time() {
-    let earliest_safe_memory = this._warp_core.recurring_call_time;
+    let earliest_safe_memory = this._tangle.recurring_call_time;
     for (let [_, value] of this._peer_data) {
       earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
     }
     return earliest_safe_memory;
   }
   async _progress_time_inner(time_progressed) {
-    await this._warp_core.progress_time(time_progressed);
-    let earliest_safe_memory = this._warp_core.recurring_call_time;
+    await this._tangle.progress_time(time_progressed);
+    let earliest_safe_memory = this._tangle.recurring_call_time;
     for (let [peer_id, value] of this._peer_data) {
       earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
       const KEEP_ALIVE_THRESHOLD = 200;
-      if (this._warp_core.current_time - value.last_sent_message > KEEP_ALIVE_THRESHOLD) {
-        this.room.send_message(this._encode_time_progressed_message(this._warp_core.current_time), peer_id);
+      if (this._tangle.current_time - value.last_sent_message > KEEP_ALIVE_THRESHOLD) {
+        this.room.send_message(this._encode_time_progressed_message(this._tangle.current_time), peer_id);
       }
     }
-    this._warp_core.remove_history_before(earliest_safe_memory - 100);
+    this._tangle.remove_history_before(earliest_safe_memory - 100);
   }
   progress_time(time_progressed) {
     this._run_inner_function(async () => {
@@ -1179,12 +1179,12 @@ var WarpCore = class {
     });
   }
   get_memory() {
-    return this._warp_core.wasm_instance?.instance.exports.memory;
+    return this._tangle.wasm_instance?.instance.exports.memory;
   }
 };
 export {
   RoomState,
-  UserId,
-  WarpCore
+  Tangle,
+  UserId
 };
 //# sourceMappingURL=index.js.map
