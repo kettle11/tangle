@@ -131,107 +131,125 @@ export class Room {
 
         this._configuration = room__configuration;
         this._configuration.name ??= "";
-        this._configuration.server_url ??= "tangle-server.fly.dev";
+        this._configuration.server_url ??= "0.0.0.0:8081";
 
-        const server_socket = new WebSocket("wss://" + this._configuration.server_url);
+        let connect_to_server = () => {
+            let server_socket = new WebSocket("ws://" + this._configuration.server_url);
 
-        let keep_alive_interval: number;
-        server_socket.onopen = () => {
-            console.log("[room] Connection established with server");
-            console.log("[room] Requesting to join room: ", this._configuration.name);
-            server_socket.send(JSON.stringify({ 'join_room': document.location.hash.substring(1) }));
+            let keep_alive_interval: number;
 
-            // Poke the server every 10 seconds to ensure it doesn't drop our connection.
-            // Without this it seems browsers don't send WebSocket native 'pings' as expected.
-            // and some server providers (like fly.io) will shutdown inactive TCP sockets.
-            // This also gives the server a chance to disconnect peers that become unresponsive.
-            keep_alive_interval = setInterval(function () {
-                server_socket.send("keep_alive");
-            }, 10_000);
-        };
+            server_socket.onopen = () => {
+                console.log("[room] Connection established with server");
+                console.log("[room] Requesting to join room: ", this._configuration.name);
+                server_socket.send(JSON.stringify({ 'join_room': document.location.hash.substring(1) }));
 
-        server_socket.onmessage = async (event) => {
-            const last_index = event.data.lastIndexOf('}');
-            const json = event.data.substring(0, last_index + 1);
+                // Poke the server every 10 seconds to ensure it doesn't drop our connection.
+                // Without this it seems browsers don't send WebSocket native 'pings' as expected.
+                // and some server providers (like fly.io) will shutdown inactive TCP sockets.
+                // This also gives the server a chance to disconnect peers that become unresponsive.
+                clearInterval(keep_alive_interval);
+                keep_alive_interval = setInterval(function () {
+                    server_socket.send("keep_alive");
+                }, 10_000);
+            };
 
-            const message = JSON.parse(json);
-            // peer_id is appended by the server to the end of incoming messages.
-            let peer_ip = event.data.substring(last_index + 1).trim();
-            let peer_id = compute_id_from_ip(peer_ip);
+            server_socket.onclose = (event) => {
+                if (this._current_state != RoomState.Disconnected) {
+                    clearInterval(keep_alive_interval);
 
-            if (message.room_name) {
-                // Received when joining a room for the first time.
-                console.log("[room] Entering room: ", message.room_name);
+                    // Disconnecting from the WebSocket is considered a full disconnect from the room.
 
-                this._current_state = RoomState.Joining;
+                    // Call the on_peer_left handler for each peer
+                    for (let [peer_id, peer] of this._peers) {
+                        this._configuration.on_peer_left?.(peer_id, Date.now());
+                    }
 
-                let peers_to_join_ids = message.peers.map(compute_id_from_ip);
-                this._peers_to_join = new Set(peers_to_join_ids);
+                    this._current_state = RoomState.Disconnected;
+                    this._peers_to_join.clear();
+                    this._peers.clear();
 
-                this._configuration.on_state_change?.(this._current_state);
+                    if (event.wasClean) {
+                        console.log(`[room] Server connection closed cleanly, code=${event.code} reason=${event.reason}`);
+                    } else {
+                        console.log(`[room] Server connection unexpectedly closed. code=${event.code} reason=${event.reason}`);
+                        console.log("event: ", event);
+                    }
 
-                // If we've already connected to a peer then remove it from _peers_to_join.
-                for (const [key, value] of this._peers) {
-                    this._peers_to_join.delete(key);
+                    this._configuration.on_state_change?.(this._current_state);
                 }
-                this.check_if_joined();
 
-                // TODO: Make this messing with the URL an optional thing.
-                document.location =
-                    document.location.origin.toString() +
-                    '#' + message.room_name;
-                this._current_room_name = message.room_name;
-                this.my_id = compute_id_from_ip(message.your_ip);
-            } else if (message.join_room) {
-                console.log("[room] Peer joining room: ", peer_id);
-                this.make_rtc_peer_connection(peer_ip, peer_id, server_socket);
-            } else if (message.offer) {
-                let peer_connection = this.make_rtc_peer_connection(peer_ip, peer_id, server_socket);
-                await peer_connection.setRemoteDescription(new RTCSessionDescription(message.offer));
-                const answer = await peer_connection.createAnswer();
-                await peer_connection.setLocalDescription(answer);
-                server_socket.send(JSON.stringify({ 'answer': answer, 'destination': peer_ip }));
-            } else if (message.answer) {
-                const remoteDesc = new RTCSessionDescription(message.answer);
-                await this._peers.get(peer_id)?.connection.setRemoteDescription(remoteDesc);
-            } else if (message.new_ice_candidate) {
-                try {
-                    await this._peers.get(peer_id)?.connection.addIceCandidate(message.new_ice_candidate);
-                } catch (e) {
-                    console.error("[room] Error adding received ice candidate", e);
+                // Attempt to reconnect
+                setTimeout(function () {
+                    console.log("[room] Attempting to reconnect to server...")
+                    connect_to_server();
+                }, 250);
+            };
+
+            server_socket.onerror = function (error) {
+                console.log(`[room] Server socket error:`, error);
+                server_socket.close();
+            };
+
+            server_socket.onmessage = async (event) => {
+                const last_index = event.data.lastIndexOf('}');
+                const json = event.data.substring(0, last_index + 1);
+
+                const message = JSON.parse(json);
+                // peer_id is appended by the server to the end of incoming messages.
+                let peer_ip = event.data.substring(last_index + 1).trim();
+                let peer_id = compute_id_from_ip(peer_ip);
+
+                if (message.room_name) {
+                    // Received when joining a room for the first time.
+                    console.log("[room] Entering room: ", message.room_name);
+
+                    this._current_state = RoomState.Joining;
+
+                    let peers_to_join_ids = message.peers.map(compute_id_from_ip);
+                    this._peers_to_join = new Set(peers_to_join_ids);
+
+                    this._configuration.on_state_change?.(this._current_state);
+
+                    // If we've already connected to a peer then remove it from _peers_to_join.
+                    for (const [key, value] of this._peers) {
+                        this._peers_to_join.delete(key);
+                    }
+                    this.check_if_joined();
+
+                    // TODO: Make this messing with the URL an optional thing.
+                    document.location =
+                        document.location.origin.toString() +
+                        '#' + message.room_name;
+                    this._current_room_name = message.room_name;
+                    this.my_id = compute_id_from_ip(message.your_ip);
+                } else if (message.join_room) {
+                    console.log("[room] Peer joining room: ", peer_id);
+                    this.make_rtc_peer_connection(peer_ip, peer_id, server_socket);
+                } else if (message.offer) {
+                    let peer_connection = this.make_rtc_peer_connection(peer_ip, peer_id, server_socket);
+                    await peer_connection.setRemoteDescription(new RTCSessionDescription(message.offer));
+                    const answer = await peer_connection.createAnswer();
+                    await peer_connection.setLocalDescription(answer);
+                    server_socket.send(JSON.stringify({ 'answer': answer, 'destination': peer_ip }));
+                } else if (message.answer) {
+                    const remoteDesc = new RTCSessionDescription(message.answer);
+                    await this._peers.get(peer_id)?.connection.setRemoteDescription(remoteDesc);
+                } else if (message.new_ice_candidate) {
+                    try {
+                        await this._peers.get(peer_id)?.connection.addIceCandidate(message.new_ice_candidate);
+                    } catch (e) {
+                        console.error("[room] Error adding received ice candidate", e);
+                    }
+                } else if (message.disconnected_peer_id) {
+                    let disconnected_peer_id = compute_id_from_ip(message.disconnected_peer_id);
+                    console.log("[room] Peer left: ", disconnected_peer_id);
+                    this.remove_peer(disconnected_peer_id, message.time);
+                    this._peers_to_join.delete(disconnected_peer_id);
+                    this.check_if_joined();
                 }
-            } else if (message.disconnected_peer_id) {
-                let disconnected_peer_id = compute_id_from_ip(message.disconnected_peer_id);
-                console.log("[room] Peer left: ", disconnected_peer_id);
-                this.remove_peer(disconnected_peer_id, message.time);
-                this._peers_to_join.delete(disconnected_peer_id);
-                this.check_if_joined();
-            }
+            };
         };
-
-        server_socket.onclose = (event) => {
-            clearInterval(keep_alive_interval);
-
-            // Disconnecting from the WebSocket is considered a full disconnect from the room.
-
-            // TODO: On disconnected callback
-            this._current_state = RoomState.Disconnected;
-            this._peers_to_join.clear();
-            this._peers.clear();
-
-            if (event.wasClean) {
-                console.log(`[room] Server connection closed cleanly, code=${event.code} reason=${event.reason}`);
-            } else {
-                console.log(`[room] Server connection unexpectedly closed. code=${event.code} reason=${event.reason}`);
-                console.log("event: ", event);
-            }
-
-            this._configuration.on_state_change?.(this._current_state);
-        };
-
-        server_socket.onerror = function (error) {
-            console.log(`[room] Server socket error:`, error);
-        };
+        connect_to_server();
     }
 
     private check_if_joined() {
