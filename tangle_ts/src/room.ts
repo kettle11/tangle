@@ -271,8 +271,7 @@ export class Room {
         };
 
         peer_connection.ondatachannel = (event) => {
-            let data_channel = event.channel;
-
+            this._peers.get(peer_id)!.data_channel = event.channel;
         };
 
         data_channel.onopen = event => {

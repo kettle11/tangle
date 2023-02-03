@@ -108,7 +108,7 @@ export class OfflineTangle {
                     const message_data = new Uint8Array(memory.buffer, pointer, length);
                     const decoded_string = decoder.decode(new Uint8Array(message_data));
                     console.error(decoded_string);
-                }
+                },
             }
         };
 
@@ -119,10 +119,32 @@ export class OfflineTangle {
             rollback_strategy = RollbackStrategy.WasmSnapshots;
         }
 
+
+        // TODO: These imports are for AssemblyScript, but they should be optional
+        // or part of a more fleshed-out strategy for how to manage imports.
+        if (!imports.env) {
+            imports.env = {};
+        }
+
+        if (!imports.env.abort) {
+            imports.env.abort = () => {
+                console.log("Ignoring call to abort");
+            };
+        }
+
+        if (!imports.env.seed) {
+            imports.env.seed = () => {
+                // This is a good random number.
+                return 14;
+            };
+        }
+
         let tangle = new OfflineTangle();
         tangle._rollback_strategy = rollback_strategy;
         tangle._recurring_call_interval = recurring_call_interval;
         tangle._imports = imports;
+
+
 
         wasm_binary = await process_binary(wasm_binary, true, rollback_strategy == RollbackStrategy.Granular);
 

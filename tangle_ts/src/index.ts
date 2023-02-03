@@ -1,3 +1,3 @@
-export { Tangle, UserId } from "./online_tangle.js"
-export { RoomState, PeerId } from "./room.js";
+export { Tangle, UserId, TangleState } from "./online_tangle.js"
+export { PeerId } from "./room.js";
 

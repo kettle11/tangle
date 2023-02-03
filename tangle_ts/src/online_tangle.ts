@@ -31,7 +31,7 @@ type PeerData = {
 let text_encoder = new TextEncoder();
 let text_decoder = new TextDecoder();
 
-enum TangleState {
+export enum TangleState {
     Disconnected,
     Connected,
     RequestingHeap
@@ -520,7 +520,7 @@ export class Tangle {
         });
     }
 
-    call(function_name: string, args: [number | UserIdType]) {
+    call(function_name: string, args: Array<number | UserIdType>) {
         this._run_inner_function(async () => {
 
             // TODO: Only process the args like this for local calls.
