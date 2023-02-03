@@ -134,10 +134,20 @@ export class Room {
         this._configuration.server_url ??= "tangle-server.fly.dev";
 
         const server_socket = new WebSocket("wss://" + this._configuration.server_url);
+
+        let keep_alive_interval: number;
         server_socket.onopen = () => {
             console.log("[room] Connection established with server");
             console.log("[room] Requesting to join room: ", this._configuration.name);
             server_socket.send(JSON.stringify({ 'join_room': document.location.hash.substring(1) }));
+
+            // Poke the server every 10 seconds to ensure it doesn't drop our connection.
+            // Without this it seems browsers don't send WebSocket native 'pings' as expected.
+            // and some server providers (like fly.io) will shutdown inactive TCP sockets.
+            // This also gives the server a chance to disconnect peers that become unresponsive.
+            keep_alive_interval = setInterval(function () {
+                server_socket.send("keep_alive");
+            }, 10_000);
         };
 
         server_socket.onmessage = async (event) => {
@@ -171,7 +181,6 @@ export class Room {
                     document.location.origin.toString() +
                     '#' + message.room_name;
                 this._current_room_name = message.room_name;
-                console.log("MY IP: ", message.your_ip);
                 this.my_id = compute_id_from_ip(message.your_ip);
             } else if (message.join_room) {
                 console.log("[room] Peer joining room: ", peer_id);
@@ -201,6 +210,8 @@ export class Room {
         };
 
         server_socket.onclose = (event) => {
+            clearInterval(keep_alive_interval);
+
             // Disconnecting from the WebSocket is considered a full disconnect from the room.
 
             // TODO: On disconnected callback
@@ -211,14 +222,15 @@ export class Room {
             if (event.wasClean) {
                 console.log(`[room] Server connection closed cleanly, code=${event.code} reason=${event.reason}`);
             } else {
-                console.log('[room] Connection died');
+                console.log(`[room] Server connection unexpectedly closed. code=${event.code} reason=${event.reason}`);
+                console.log("event: ", event);
             }
 
             this._configuration.on_state_change?.(this._current_state);
         };
 
         server_socket.onerror = function (error) {
-            console.log(`[room] Server socket error ${error}`);
+            console.log(`[room] Server socket error:`, error);
         };
     }
 
