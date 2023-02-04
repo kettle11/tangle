@@ -28,7 +28,7 @@ type GlobalSet = {
 type WasmSnapShot = {
     memory: Uint8Array,
     // The index in the exports and the value to set the export to
-    globals: Array<[number, number]>,
+    globals: Array<[number, any]>,
 }
 
 type WasmAction = Store | Grow | GlobalSet;
@@ -144,8 +144,6 @@ export class OfflineTangle {
         tangle._recurring_call_interval = recurring_call_interval;
         tangle._imports = imports;
 
-
-
         wasm_binary = await process_binary(wasm_binary, true, rollback_strategy == RollbackStrategy.Granular);
 
         if (rollback_strategy == RollbackStrategy.Granular) {
@@ -165,9 +163,9 @@ export class OfflineTangle {
                     }
                 },
                 on_grow: (pages: number) => {
-                    console.log("on_grow called: ", pages);
+                    console.log("[tangle] on_grow called: ", pages);
                     let memory = tangle.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
-                    console.log("NEW MEMORY SIZE IN PAGES: ", (memory.buffer.byteLength / WASM_PAGE_SIZE) + 1);
+                    console.log("[tangle] New memory size in pages: ", (memory.buffer.byteLength / WASM_PAGE_SIZE) + 1);
 
                     tangle._actions.push({ action_type: WasmActionType.Grow, old_page_count: memory.buffer.byteLength / WASM_PAGE_SIZE, /* hash_before: tangle.hash() */ });
                 },
@@ -180,7 +178,7 @@ export class OfflineTangle {
         }
         let wasm_instance = await WebAssembly.instantiate(wasm_binary, tangle._imports);
 
-        console.log("HEAP SIZE: ", (wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer.byteLength);
+        console.log("[tangle] Heap size: ", (wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer.byteLength);
         tangle.wasm_instance = wasm_instance;
 
         return tangle;
@@ -217,12 +215,11 @@ export class OfflineTangle {
     }
 
     async reset_with_new_program(wasm_binary: Uint8Array, current_time: number) {
-        console.log("RESETTING WITH NEW PROGRAM-----------");
 
         wasm_binary = await process_binary(wasm_binary, true, this._rollback_strategy == RollbackStrategy.Granular);
 
         this.wasm_instance = await WebAssembly.instantiate(wasm_binary, this._imports);
-        console.log("BINARY HASH: ", this.hash_data(wasm_binary));
+        // console.log("[tangle] Binary hash of new program: ", this.hash_data(wasm_binary));
 
         this._actions = [];
         this.function_calls = [];
@@ -250,8 +247,6 @@ export class OfflineTangle {
     }
 
     remove_history_before(time: number) {
-        // TODO: More carefully audit this function for correctness.
-
         let to_remove = 0;
 
         let i = 0;
@@ -269,7 +264,6 @@ export class OfflineTangle {
 
         // Always leave one function call for debugging purposes.
         this.function_calls.splice(0, i - 1);
-        //console.log("ACTIONS: ", this._actions);
     }
 
 
@@ -416,13 +410,6 @@ export class OfflineTangle {
                     if (wasm_snapshot_before) {
                         this._apply_snapshot(wasm_snapshot_before);
                     }
-                    /*
-                    let hash_after_revert = this.hash();
-
-                    if (!arrayEquals(hash_after_revert, this.function_calls[i].hash_before)) {
-                        console.error("HASHES DO NOT MATCH DURING REVERT");
-                    }
-                    */
                 }
                 break;
             }
@@ -487,22 +474,11 @@ export class OfflineTangle {
 
     /// Returns the function call of this instance.
     async call_with_time_stamp(time_stamp: TimeStamp, function_name: string, args: Array<number>) {
-        // TODO: Check for a PlayerId to insert into args
-        // TODO: Use a real player ID.
-
         this._upcoming_function_calls.push({
             function_name,
             args,
             time_stamp
         });
-
-        /*
-        let new_call_index = await this._call_inner(function_name, time_stamp, args);
-
-        // console.log("FUNCTION CALLS: ", structuredClone(this.function_calls));
-        this.time_offset += 1;
-        return new_call_index;
-        */
     }
 
     /// Call a function but ensure its results do not persist and cannot cause a desync.
@@ -555,15 +531,6 @@ export class OfflineTangle {
         let data_to_hash = new Uint8Array((this.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer);
         return this.hash_data(data_to_hash);
     }
-    /*
-    print_globals() {
-        for (const [key, v] of Object.entries(this.wasm_instance!.instance.exports)) {
-            if (key.slice(0, 3) == "wg_") {
-                console.log("GLOBAL: ", [key, v.value]);
-            }
-        }
-    }
-    */
     hash_data(data_to_hash: Uint8Array): Uint8Array {
         let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
         let instance = OfflineTangle._tangle_wasm!.instance.exports;
@@ -577,7 +544,7 @@ export class OfflineTangle {
         return hashed_result;
     }
 }
-/// Preprocess the binary to record all persistent state edits.
+
 async function process_binary(wasm_binary: Uint8Array, export_globals: boolean, track_changes: boolean) {
     if (!(export_globals || track_changes)) {
         return wasm_binary;
