@@ -1,5 +1,5 @@
 import { PeerId, Room, RoomState } from "./room.js";
-import { arrayEquals, OfflineTangle, TimeStamp } from "./offline_tangle.js";
+import { arrayEquals, OfflineTangle, TimeStamp, RustUtilities } from "./offline_tangle.js";
 import { MessageWriterReader } from "./message_encoding.js";
 
 export { RoomState, PeerId } from "./room.js";
@@ -56,7 +56,7 @@ export class Tangle {
     private _enqueued_inner_calls = new Array(Function());
     private _last_performance_now?: number;
     private _configuraton?: TangleConfiguration;
-
+    private _rust_utilities: RustUtilities;
     private _outgoing_message_buffer = new Uint8Array(500);
 
     // private _debug_enabled = true;
@@ -64,15 +64,21 @@ export class Tangle {
     static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, tangle_configuration?: TangleConfiguration): Promise<Tangle> {
         tangle_configuration ??= {};
         tangle_configuration.accept_new_programs ??= false;
+        tangle_configuration.fixed_update_interval ??= 0;
 
-        const tangle = new Tangle();
+        const offline_tangle = await OfflineTangle.setup(wasm_binary, wasm_imports, tangle_configuration.fixed_update_interval);
 
-        await tangle.setup_inner(wasm_binary, wasm_imports, tangle_configuration);
+        const tangle = new Tangle(offline_tangle);
+        await tangle.setup_inner(offline_tangle, wasm_binary, wasm_imports, tangle_configuration);
         return tangle;
     }
 
-    private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, configuration?: TangleConfiguration) {
+    constructor(offline_tangle: OfflineTangle) {
+        this._offline_tangle = offline_tangle;
+        this._rust_utilities = offline_tangle.rust_utilities;
+    }
 
+    private async setup_inner(offline_tangle: OfflineTangle, wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, configuration?: TangleConfiguration) {
         const room_configuration = {
             on_peer_joined: (peer_id: PeerId) => {
                 this._run_inner_function(async () => {
@@ -246,12 +252,6 @@ export class Tangle {
             }
         };
 
-        let fixed_update_interval = configuration?.fixed_update_interval;
-        if (!fixed_update_interval) {
-            fixed_update_interval = 0;
-        }
-
-        this._offline_tangle = await OfflineTangle.setup(wasm_binary, wasm_imports, fixed_update_interval);
         this._room = await Room.setup(room_configuration);
         this._current_program_binary = wasm_binary;
     }
@@ -284,7 +284,7 @@ export class Tangle {
     private _encode_heap_message(): Uint8Array {
         // MAJOR TODO: State needs to be sent so that it's safe for the peer to rollback.
         const memory = this._offline_tangle.wasm_instance.instance.exports.memory as WebAssembly.Memory;
-        const encoded_data = this._offline_tangle.gzip_encode(new Uint8Array(memory.buffer));
+        const encoded_data = this._rust_utilities.gzip_encode(new Uint8Array(memory.buffer));
 
         const exports = this._offline_tangle.wasm_instance.instance.exports;
         let globals_count = 0;
@@ -328,7 +328,7 @@ export class Tangle {
         }
 
         // TODO: When implemented all function calls and events need to be decoded here.
-        const heap_data = this._offline_tangle.gzip_decode(message_reader.read_remaining_raw_bytes());
+        const heap_data = this._rust_utilities.gzip_decode(message_reader.read_remaining_raw_bytes());
 
         return {
             current_time,
@@ -340,7 +340,7 @@ export class Tangle {
 
 
     private _encode_new_program_message(program_data: Uint8Array): Uint8Array {
-        const encoded_data = this._offline_tangle.gzip_encode(program_data);
+        const encoded_data = this._rust_utilities.gzip_encode(program_data);
 
         const message = new Uint8Array(encoded_data.byteLength + 1);
         const message_writer = new MessageWriterReader(message);
@@ -351,7 +351,7 @@ export class Tangle {
     }
 
     private _decode_new_program_message(data_in: Uint8Array) {
-        const data = this._offline_tangle.gzip_decode(data_in);
+        const data = this._rust_utilities.gzip_decode(data_in);
         return data;
     }
 

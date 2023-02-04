@@ -1,11 +1,5 @@
 const WASM_PAGE_SIZE = 65536;
 
-enum WasmActionType {
-    Store,
-    Grow,
-    GlobalSet
-}
-
 type WasmSnapShot = {
     memory: Uint8Array,
     // The index in the exports and the value to set the export to
@@ -46,44 +40,127 @@ type UpcomingFunctionCall = {
     time_stamp: TimeStamp,
 }
 
-export class OfflineTangle {
-    /// The Wasm code used by Tangle itself.
-    static _tangle_wasm?: WebAssembly.WebAssemblyInstantiatedSource;
-    /// The user Wasm that Tangle is syncing 
-    wasm_instance!: WebAssembly.WebAssemblyInstantiatedSource;
-    current_time = 0;
-    private _recurring_call_interval = 0;
-    recurring_call_time = 0;
-    private _recurring_call_name?: string = "fixed_update";
-    function_calls: Array<FunctionCall> = [];
-    private _imports: WebAssembly.Imports = {};
+export class RustUtilities {
+    private _rust_utilities: WebAssembly.WebAssemblyInstantiatedSource;
 
-    private _upcoming_function_calls: Array<UpcomingFunctionCall> = [];
+    constructor(rust_utilities: WebAssembly.WebAssemblyInstantiatedSource) {
+        this._rust_utilities = rust_utilities;
+    }
 
-    // Optionally track hashes after each function call
-    hash_tracking = true;
-
-    static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports, recurring_call_interval: number): Promise<OfflineTangle> {
+    static async setup(): Promise<RustUtilities> {
         const decoder = new TextDecoder();
 
-        const imports_tangle_wasm: WebAssembly.Imports = {
+        const imports = {
             env: {
                 external_log: function (pointer: number, length: number) {
-                    const memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
+                    const memory = rust_utilities.instance.exports.memory as WebAssembly.Memory;
                     const message_data = new Uint8Array(memory.buffer, pointer, length);
                     const decoded_string = decoder.decode(new Uint8Array(message_data));
                     console.log(decoded_string);
                 },
                 external_error: function (pointer: number, length: number) {
-                    const memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
+                    const memory = rust_utilities.instance.exports.memory as WebAssembly.Memory;
                     const message_data = new Uint8Array(memory.buffer, pointer, length);
                     const decoded_string = decoder.decode(new Uint8Array(message_data));
                     console.error(decoded_string);
                 },
             }
         };
+        const rust_utilities = await WebAssembly.instantiateStreaming(fetch("rust_utilities.wasm"), imports);
+        return new RustUtilities(rust_utilities);
+    }
 
-        OfflineTangle._tangle_wasm ??= await WebAssembly.instantiateStreaming(fetch("rust_utilities.wasm"), imports_tangle_wasm);
+    gzip_decode(data_to_decode: Uint8Array) {
+        const memory = this._rust_utilities.instance.exports.memory as WebAssembly.Memory;
+        const instance = this._rust_utilities.instance.exports;
+
+        const pointer = (instance.reserve_space as CallableFunction)(data_to_decode.byteLength);
+        const destination = new Uint8Array(memory.buffer, pointer, data_to_decode.byteLength);
+        destination.set(data_to_decode);
+
+        (instance.gzip_decode as CallableFunction)();
+        const result_pointer = new Uint32Array(memory.buffer, pointer, 2);
+        const result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
+        return new Uint8Array(result_data);
+    }
+
+
+    // TODO: These are just helpers and aren't that related to the rest of the code in this:
+    gzip_encode(data_to_compress: Uint8Array) {
+        const memory = this._rust_utilities.instance.exports.memory as WebAssembly.Memory;
+        const exports = this._rust_utilities.instance.exports;
+
+        const pointer = (exports.reserve_space as CallableFunction)(data_to_compress.byteLength);
+        const destination = new Uint8Array(memory.buffer, pointer, data_to_compress.byteLength);
+        destination.set(new Uint8Array(data_to_compress));
+
+        (exports.gzip_encode as CallableFunction)();
+        const result_pointer = new Uint32Array(memory.buffer, pointer, 2);
+        const result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
+        // console.log("COMPRESSED LENGTH: ", result_data.byteLength);
+        // console.log("COMPRESSION RATIO: ", data_to_compress.byteLength / result_data.byteLength);
+        return result_data;
+    }
+
+
+    hash_data(data_to_hash: Uint8Array): Uint8Array {
+        const memory = this._rust_utilities.instance.exports.memory as WebAssembly.Memory;
+        const instance = this._rust_utilities.instance.exports;
+
+        const pointer = (instance.reserve_space as CallableFunction)(data_to_hash.byteLength);
+        const destination = new Uint8Array(memory.buffer, pointer, data_to_hash.byteLength);
+        destination.set(new Uint8Array(data_to_hash));
+
+        (instance.xxh3_128_bit_hash as CallableFunction)();
+        const hashed_result = new Uint8Array(new Uint8Array(memory.buffer, pointer, 16));
+        return hashed_result;
+    }
+
+    process_binary(wasm_binary: Uint8Array, export_globals: boolean, track_changes: boolean) {
+        if (!(export_globals || track_changes)) {
+            return wasm_binary;
+        }
+
+        const length = wasm_binary.byteLength;
+        const pointer = (this._rust_utilities.instance.exports.reserve_space as CallableFunction)(length);
+
+        const memory = this._rust_utilities.instance.exports.memory as WebAssembly.Memory;
+
+        const data_location = new Uint8Array(memory.buffer, pointer, length);
+        data_location.set(new Uint8Array(wasm_binary));
+        (this._rust_utilities.instance.exports.prepare_wasm as CallableFunction)(export_globals, track_changes);
+
+        // TODO: Write these to an output buffer instead of having two calls for them.
+        const output_ptr = (this._rust_utilities.instance.exports.get_output_ptr as CallableFunction)();
+        const output_len = (this._rust_utilities.instance.exports.get_output_len as CallableFunction)();
+        const output_wasm = new Uint8Array(memory.buffer, output_ptr, output_len);
+        return output_wasm;
+    }
+}
+
+export class OfflineTangle {
+    /// The user Wasm that Tangle is syncing 
+    wasm_instance: WebAssembly.WebAssemblyInstantiatedSource;
+    current_time = 0;
+    recurring_call_time = 0;
+    function_calls: Array<FunctionCall> = [];
+    rust_utilities: RustUtilities;
+
+    // Optionally track hashes after each function call
+    hash_tracking = true;
+
+    private _recurring_call_interval = 0;
+    private _recurring_call_name?: string = "fixed_update";
+    private _imports: WebAssembly.Imports = {};
+    private _upcoming_function_calls: Array<UpcomingFunctionCall> = [];
+
+    private constructor(wasm_instance: WebAssembly.WebAssemblyInstantiatedSource, rust_utilities: RustUtilities) {
+        this.wasm_instance = wasm_instance;
+        this.rust_utilities = rust_utilities;
+    }
+
+    static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports, recurring_call_interval: number): Promise<OfflineTangle> {
+        const rust_utilities = await RustUtilities.setup();
 
         // TODO: These imports are for AssemblyScript, but they should be optional
         // or part of a more fleshed-out strategy for how to manage imports.
@@ -92,21 +169,18 @@ export class OfflineTangle {
             console.log("Ignoring call to abort");
         };
         imports.env.seed ??= () => {
-            // This is a good random number.
-            // TODO: Find more random ones
+            // TODO: Add more entropy
             return 14;
         };
 
-        const tangle = new OfflineTangle();
+        wasm_binary = rust_utilities.process_binary(wasm_binary, true, false);
+        const wasm_instance = await WebAssembly.instantiate(wasm_binary, imports);
+
+        const tangle = new OfflineTangle(wasm_instance, rust_utilities);
         tangle._recurring_call_interval = recurring_call_interval;
         tangle._imports = imports;
 
-        wasm_binary = await process_binary(wasm_binary, true, false);
-
-        const wasm_instance = await WebAssembly.instantiate(wasm_binary, tangle._imports);
-
         console.log("[tangle] Heap size: ", (wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer.byteLength);
-        tangle.wasm_instance = wasm_instance;
 
         return tangle;
     }
@@ -142,8 +216,7 @@ export class OfflineTangle {
     }
 
     async reset_with_new_program(wasm_binary: Uint8Array, current_time: number) {
-
-        wasm_binary = await process_binary(wasm_binary, true, false);
+        wasm_binary = await this.rust_utilities.process_binary(wasm_binary, true, false);
 
         this.wasm_instance = await WebAssembly.instantiate(wasm_binary, this._imports);
         // console.log("[tangle] Binary hash of new program: ", this.hash_data(wasm_binary));
@@ -349,75 +422,11 @@ export class OfflineTangle {
         this._apply_snapshot(snapshot);
     }
 
-    // TODO: These are just helpers and aren't that related to the rest of the code in this:
-    gzip_encode(data_to_compress: Uint8Array) {
-        const memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
-        const exports = OfflineTangle._tangle_wasm!.instance.exports;
-
-        const pointer = (exports.reserve_space as CallableFunction)(data_to_compress.byteLength);
-        const destination = new Uint8Array(memory.buffer, pointer, data_to_compress.byteLength);
-        destination.set(new Uint8Array(data_to_compress));
-
-        (exports.gzip_encode as CallableFunction)();
-        const result_pointer = new Uint32Array(memory.buffer, pointer, 2);
-        const result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
-        // console.log("COMPRESSED LENGTH: ", result_data.byteLength);
-        // console.log("COMPRESSION RATIO: ", data_to_compress.byteLength / result_data.byteLength);
-        return result_data;
-    }
-
-    gzip_decode(data_to_decode: Uint8Array) {
-        const memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
-        const instance = OfflineTangle._tangle_wasm!.instance.exports;
-
-        const pointer = (instance.reserve_space as CallableFunction)(data_to_decode.byteLength);
-        const destination = new Uint8Array(memory.buffer, pointer, data_to_decode.byteLength);
-        destination.set(data_to_decode);
-
-        (instance.gzip_decode as CallableFunction)();
-        const result_pointer = new Uint32Array(memory.buffer, pointer, 2);
-        const result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
-        return new Uint8Array(result_data);
-    }
     hash(): Uint8Array {
         const data_to_hash = new Uint8Array((this.wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer);
-        return this.hash_data(data_to_hash);
-    }
-    hash_data(data_to_hash: Uint8Array): Uint8Array {
-        const memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
-        const instance = OfflineTangle._tangle_wasm!.instance.exports;
-
-        const pointer = (instance.reserve_space as CallableFunction)(data_to_hash.byteLength);
-        const destination = new Uint8Array(memory.buffer, pointer, data_to_hash.byteLength);
-        destination.set(new Uint8Array(data_to_hash));
-
-        (instance.xxh3_128_bit_hash as CallableFunction)();
-        const hashed_result = new Uint8Array(new Uint8Array(memory.buffer, pointer, 16));
-        return hashed_result;
+        return this.rust_utilities.hash_data(data_to_hash);
     }
 }
-
-async function process_binary(wasm_binary: Uint8Array, export_globals: boolean, track_changes: boolean) {
-    if (!(export_globals || track_changes)) {
-        return wasm_binary;
-    }
-
-    const length = wasm_binary.byteLength;
-    const pointer = (OfflineTangle._tangle_wasm?.instance.exports.reserve_space as CallableFunction)(length);
-
-    const memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
-
-    const data_location = new Uint8Array(memory.buffer, pointer, length);
-    data_location.set(new Uint8Array(wasm_binary));
-    (OfflineTangle._tangle_wasm?.instance.exports.prepare_wasm as CallableFunction)(export_globals, track_changes);
-
-    // TODO: Write these to an output buffer instead of having two calls for them.
-    const output_ptr = (OfflineTangle._tangle_wasm?.instance.exports.get_output_ptr as CallableFunction)();
-    const output_len = (OfflineTangle._tangle_wasm?.instance.exports.get_output_len as CallableFunction)();
-    const output_wasm = new Uint8Array(memory.buffer, output_ptr, output_len);
-    return output_wasm;
-}
-
 
 export function arrayEquals(a: Uint8Array, b: Uint8Array) {
     if (a.length != b.length) {
