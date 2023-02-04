@@ -1,5 +1,5 @@
 import { PeerId, Room, RoomState } from "./room.js";
-import { arrayEquals, OfflineTangle, TimeStamp, time_stamp_compare } from "./offline_tangle.js";
+import { arrayEquals, OfflineTangle, TimeStamp } from "./offline_tangle.js";
 import { MessageWriterReader } from "./message_encoding.js";
 
 export { RoomState, PeerId } from "./room.js";
@@ -142,8 +142,8 @@ export class Tangle {
                 this._run_inner_function(async () => {
                     // Ignore messages from peers that have disconnected. 
                     // TODO: Evaluate if this could cause desyncs.
-
-                    if (!this._peer_data.get(peer_id!)) {
+                    const peer = this._peer_data.get(peer_id);
+                    if (!peer) {
                         return;
                     }
 
@@ -153,12 +153,12 @@ export class Tangle {
                     switch (message_type) {
                         case (MessageType.TimeProgressed): {
                             const time = this._decode_time_progressed_message(message_data);
-                            this._peer_data.get(peer_id)!.last_received_message = time;
+                            peer.last_received_message = time;
                             break;
                         }
                         case (MessageType.WasmCall): {
                             const m = this._decode_wasm_call_message(message_data);
-                            this._peer_data.get(peer_id)!.last_received_message = m.time;
+                            peer.last_received_message = m.time;
 
                             const time_stamp = {
                                 time: m.time,
@@ -197,7 +197,7 @@ export class Tangle {
                             console.log("[tangle] Changing programs");
 
                             // TODO: This is incorrect. Make sure all peers are aware of their roundtrip average with each-other
-                            const round_trip_time = this._peer_data.get(peer_id)!.round_trip_time;
+                            const round_trip_time = peer.round_trip_time;
                             console.log("[tangle] Round trip offset: ", round_trip_time / 2);
 
                             const new_program = this._decode_new_program_message(message_data);
@@ -210,7 +210,7 @@ export class Tangle {
                             const heap_message = this._decode_heap_message(message_data);
 
                             // TODO: Get roundtrip time to peer and increase current_time by half of that.
-                            const round_trip_time = this._peer_data.get(peer_id)!.round_trip_time;
+                            const round_trip_time = peer.round_trip_time;
                             console.log("[tangle] Approximate round trip offset: ", round_trip_time / 2);
 
                             const current_time = heap_message.current_time;
@@ -238,7 +238,7 @@ export class Tangle {
                         }
                         case (MessageType.Pong): {
                             const time = this._decode_bounce_back_return(message_data);
-                            this._peer_data.get(peer_id)!.round_trip_time = Date.now() - time;
+                            peer.round_trip_time = Date.now() - time;
                             break;
                         }
                     }
@@ -256,7 +256,7 @@ export class Tangle {
         this._current_program_binary = wasm_binary;
     }
 
-    private async _run_inner_function(f: Function, enqueue_condition = false) {
+    private async _run_inner_function(f: () => void, enqueue_condition = false) {
         if (!this._block_reentrancy && !enqueue_condition) {
             this._block_reentrancy = true;
             await f();
@@ -283,12 +283,12 @@ export class Tangle {
     /// This actually encodes globals as well, not just the heap.
     private _encode_heap_message(): Uint8Array {
         // MAJOR TODO: State needs to be sent so that it's safe for the peer to rollback.
-        const memory = this._offline_tangle.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
+        const memory = this._offline_tangle.wasm_instance.instance.exports.memory as WebAssembly.Memory;
         const encoded_data = this._offline_tangle.gzip_encode(new Uint8Array(memory.buffer));
 
-        const exports = this._offline_tangle.wasm_instance!.instance.exports;
+        const exports = this._offline_tangle.wasm_instance.instance.exports;
         let globals_count = 0;
-        for (const [key, v] of Object.entries(exports)) {
+        for (const key of Object.keys(exports)) {
             if (key.slice(0, 3) == "wg_") {
                 globals_count += 1;
             }
@@ -355,7 +355,7 @@ export class Tangle {
         return data;
     }
 
-    private _encode_wasm_call_message(function_string: string, time: number, args: Array<number>, hash?: Uint8Array): Uint8Array {
+    private _encode_wasm_call_message(function_string: string, time: number, args: Array<number> /*, hash?: Uint8Array*/): Uint8Array {
         const message_writer = new MessageWriterReader(this._outgoing_message_buffer);
         message_writer.write_u8(MessageType.WasmCall);
 

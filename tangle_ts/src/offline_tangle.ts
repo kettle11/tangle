@@ -222,7 +222,7 @@ export class OfflineTangle {
 
             //  console.log("CALLING %s", function_call.function_name, function_call.time_stamp);
 
-            await this._call_inner(function_call.function_name, function_call.time_stamp, function_call!.args);
+            await this._call_inner(function_call.function_name, function_call.time_stamp, function_call.args);
 
             const time_now = performance.now();
             if ((start_time - time_now) > (time_progressed * 0.75)) {
@@ -380,7 +380,7 @@ export class OfflineTangle {
         return new Uint8Array(result_data);
     }
     hash(): Uint8Array {
-        const data_to_hash = new Uint8Array((this.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer);
+        const data_to_hash = new Uint8Array((this.wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer);
         return this.hash_data(data_to_hash);
     }
     hash_data(data_to_hash: Uint8Array): Uint8Array {

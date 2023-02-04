@@ -154,7 +154,7 @@ export class Room {
                     // Disconnecting from the WebSocket is considered a full disconnect from the room.
 
                     // Call the on_peer_left handler for each peer
-                    for (const [peer_id, peer] of this._peers) {
+                    for (const peer_id of this._peers.keys()) {
                         this._configuration.on_peer_left?.(peer_id, Date.now());
                     }
 
@@ -213,7 +213,7 @@ export class Room {
                     this._configuration.on_state_change?.(this._current_state);
 
                     // If we've already connected to a peer then remove it from _peers_to_join.
-                    for (const [key, value] of this._peers) {
+                    for (const key of this._peers.keys()) {
                         this._peers_to_join.delete(key);
                     }
                     this.check_if_joined();
@@ -278,22 +278,22 @@ export class Room {
             }
         };
 
-        peer_connection.onicecandidateerror = event => {
+        peer_connection.onicecandidateerror = (event) => {
             console.log("[room] Ice candidate error: ", event);
         };
 
-        peer_connection.onnegotiationneeded = async (event) => {
+        peer_connection.onnegotiationneeded = async () => {
             console.log("[room] Negotiation needed");
             const offer = await peer_connection.createOffer();
             await peer_connection.setLocalDescription(offer);
             server_socket.send(JSON.stringify({ 'offer': offer, 'destination': peer_ip }));
         };
 
-        peer_connection.onsignalingstatechange = (event) => {
+        peer_connection.onsignalingstatechange = () => {
             console.log("[room] Signaling state changed: ", peer_connection.signalingState)
         };
 
-        peer_connection.onconnectionstatechange = (event) => {
+        peer_connection.onconnectionstatechange = () => {
             console.log("[room] Connection state changed: ", peer_connection.connectionState)
         };
 
@@ -301,32 +301,12 @@ export class Room {
             this._peers.get(peer_id)!.data_channel = event.channel;
         };
 
-        data_channel.onopen = event => {
+        data_channel.onopen = () => {
             this._peers_to_join.delete(peer_id);
 
             this._peers.get(peer_id)!.ready = true;
             this._configuration.on_peer_joined?.(peer_id);
             this.check_if_joined();
-
-            /*
-            peer_connection.getStats().then((stats) => {
-    
-                console.log("[room] DataChannel stats: ");
-                console.log(stats);
-                stats.forEach((report) => {
-                    //  console.log("REPORT: %s ", report.type, report);
-                    if (report.type === "candidate-pair") {
-                        console.log("[room] Round trip seconds to _peers: %s : %s", peer_id, report.currentRoundTripTime);
-                    }
-                });
-    
-                this._peers_to_join.delete(peer_id);
-    
-                this._peers.get(peer_id)!.ready = true;
-                this._configuration.on_peer_joined?.(peer_id);
-                this.check_if_joined();
-            });
-            */
         }
 
         data_channel.onmessage = (event) => {
