@@ -6,36 +6,10 @@ enum WasmActionType {
     GlobalSet
 }
 
-type Store = {
-    action_type: WasmActionType.Store,
-    location: number,
-    old_value: Uint8Array
-    // hash_before: Uint8Array
-};
-
-type Grow = {
-    action_type: WasmActionType.Grow,
-    old_page_count: number,
-    // hash_before: Uint8Array
-};
-
-type GlobalSet = {
-    action_type: WasmActionType.GlobalSet,
-    global_id: string,
-    old_value: any,
-};
-
 type WasmSnapShot = {
     memory: Uint8Array,
     // The index in the exports and the value to set the export to
     globals: Array<[number, any]>,
-}
-
-type WasmAction = Store | Grow | GlobalSet;
-
-export enum RollbackStrategy {
-    WasmSnapshots,
-    Granular,
 }
 
 export type TimeStamp = {
@@ -61,7 +35,6 @@ export type FunctionCall = {
     hash_after?: Uint8Array,
     name: string,
     args: Array<number>,
-    actions_caused: number,
     time_stamp: TimeStamp,
     // Used if the 'WasmSnapshot' RollBackStrategy is used.
     wasm_snapshot_before?: WasmSnapShot
@@ -82,17 +55,15 @@ export class OfflineTangle {
     private _recurring_call_interval: number = 0;
     recurring_call_time: number = 0;
     private _recurring_call_name?: string = "fixed_update";
-    private _actions: Array<WasmAction> = [];
     function_calls: Array<FunctionCall> = [];
     private _imports: WebAssembly.Imports = {};
 
-    private _rollback_strategy: RollbackStrategy = RollbackStrategy.Granular;
     private _upcoming_function_calls: Array<UpcomingFunctionCall> = new Array();
 
     // Optionally track hashes after each function call
     hash_tracking: boolean = true;
 
-    static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports, recurring_call_interval: number, rollback_strategy?: RollbackStrategy): Promise<OfflineTangle> {
+    static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports, recurring_call_interval: number): Promise<OfflineTangle> {
         let decoder = new TextDecoder();
 
         let imports_tangle_wasm: WebAssembly.Imports = {
@@ -114,12 +85,6 @@ export class OfflineTangle {
 
         OfflineTangle._tangle_wasm ??= await WebAssembly.instantiateStreaming(fetch("rust_utilities.wasm"), imports_tangle_wasm);
 
-        if (!rollback_strategy) {
-            // TODO: Check initial memory size and choose a rollback strategy based on that.
-            rollback_strategy = RollbackStrategy.WasmSnapshots;
-        }
-
-
         // TODO: These imports are for AssemblyScript, but they should be optional
         // or part of a more fleshed-out strategy for how to manage imports.
         if (!imports.env) {
@@ -140,42 +105,11 @@ export class OfflineTangle {
         }
 
         let tangle = new OfflineTangle();
-        tangle._rollback_strategy = rollback_strategy;
         tangle._recurring_call_interval = recurring_call_interval;
         tangle._imports = imports;
 
-        wasm_binary = await process_binary(wasm_binary, true, rollback_strategy == RollbackStrategy.Granular);
+        wasm_binary = await process_binary(wasm_binary, true, false);
 
-        if (rollback_strategy == RollbackStrategy.Granular) {
-
-            tangle._imports.wasm_guardian = {
-                on_store: (location: number, size: number) => {
-                    // console.log("HASH BEFORE STORE: ", tangle.hash());
-
-                    //  console.log("on_store called: ", location, size);
-                    if ((location + size) > (tangle.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer.byteLength) {
-                        console.log("OUT OF BOUNDS MEMORY SIZE IN PAGES: ", (location + size) / WASM_PAGE_SIZE);
-                        console.error("MEMORY OUT OF BOUNDS!: ", location + size);
-                    } else {
-                        let memory = tangle.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
-                        let old_value = new Uint8Array(new Uint8Array(memory.buffer, location, size));
-                        tangle._actions.push({ action_type: WasmActionType.Store, location: location, old_value: old_value, /* hash_before: tangle.hash() */ });
-                    }
-                },
-                on_grow: (pages: number) => {
-                    console.log("[tangle] on_grow called: ", pages);
-                    let memory = tangle.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
-                    console.log("[tangle] New memory size in pages: ", (memory.buffer.byteLength / WASM_PAGE_SIZE) + 1);
-
-                    tangle._actions.push({ action_type: WasmActionType.Grow, old_page_count: memory.buffer.byteLength / WASM_PAGE_SIZE, /* hash_before: tangle.hash() */ });
-                },
-                on_global_set: (id: number) => {
-                    //  console.log("on_global_set called: ", id);
-                    let global_id = "wg_global_" + id;
-                    tangle._actions.push({ action_type: WasmActionType.GlobalSet, global_id: global_id, old_value: tangle.wasm_instance?.instance.exports[global_id] });
-                },
-            };
-        }
         let wasm_instance = await WebAssembly.instantiate(wasm_binary, tangle._imports);
 
         console.log("[tangle] Heap size: ", (wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer.byteLength);
@@ -216,12 +150,11 @@ export class OfflineTangle {
 
     async reset_with_new_program(wasm_binary: Uint8Array, current_time: number) {
 
-        wasm_binary = await process_binary(wasm_binary, true, this._rollback_strategy == RollbackStrategy.Granular);
+        wasm_binary = await process_binary(wasm_binary, true, false);
 
         this.wasm_instance = await WebAssembly.instantiate(wasm_binary, this._imports);
         // console.log("[tangle] Binary hash of new program: ", this.hash_data(wasm_binary));
 
-        this._actions = [];
         this.function_calls = [];
 
         // TODO: It might be better to not reset time here.
@@ -239,7 +172,6 @@ export class OfflineTangle {
             (exports[`wg_global_${key}`] as WebAssembly.Global).value = value;
         }
 
-        this._actions = [];
         this.function_calls = [];
 
         this.current_time = current_time;
@@ -252,59 +184,14 @@ export class OfflineTangle {
         let i = 0;
         for (i = 0; i < this.function_calls.length; i++) {
             let f = this.function_calls[i];
-            if (f.time_stamp.time < time) {
-                to_remove += f.actions_caused;
-            } else {
+            if (f.time_stamp.time >= time) {
+
                 break;
             }
         }
 
-        // Remove all actions that occurred before this.
-        this._actions.splice(0, to_remove);
-
         // Always leave one function call for debugging purposes.
         this.function_calls.splice(0, i - 1);
-    }
-
-
-    private async _revert_actions(actions_to_remove: number) {
-        let memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
-
-        let to_rollback = this._actions.splice(this._actions.length - actions_to_remove, actions_to_remove);
-        for (let i = to_rollback.length - 1; i >= 0; i--) {
-            let action = to_rollback[i];
-            switch (action.action_type) {
-                case WasmActionType.Store: {
-                    let destination = new Uint8Array(memory.buffer, action.location, action.old_value.byteLength);
-                    destination.set(action.old_value);
-
-
-                    // let hash = this.hash();
-                    // if (!arrayEquals(hash, action.hash_before)) {
-                    //     console.error("ACTION HASH DOES NOT MATCH");
-                    // }
-
-                    break;
-                }
-                case WasmActionType.Grow: {
-                    console.log("ROLLING BACK GROW!");
-
-                    await this.assign_memory(new Uint8Array(memory.buffer, 0, action.old_page_count * WASM_PAGE_SIZE));
-                    memory = this.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
-
-                    // let hash = this.hash();
-                    // if (!arrayEquals(hash, action.hash_before)) {
-                    //     console.error("GROW ACTION HASH DOES NOT MATCH");
-                    // }
-
-                    break;
-                }
-                case WasmActionType.GlobalSet: {
-                    (this.wasm_instance?.instance.exports[action.global_id] as WebAssembly.Global).value = action.old_value;
-                    break;
-                }
-            }
-        }
     }
 
     steps_remaining(time_to_progress: number): number {
@@ -396,15 +283,12 @@ export class OfflineTangle {
 
         // Rewind any function calls that occur after this.
         let i = this.function_calls.length;
-        let actions_to_remove = 0;
         for (; i > 0; i--) {
             // Keep going until a timestamp less than `time_stamp` is found.
             let function_call = this.function_calls[i - 1];
             if (time_stamp_compare(function_call.time_stamp, time_stamp) == -1) {
 
                 if (this.function_calls[i]) {
-                    await this._revert_actions(actions_to_remove);
-
                     // This will only happen if we're using the WasmSnapshot RollbackStrategy.
                     let wasm_snapshot_before = this.function_calls[i].wasm_snapshot_before;
                     if (wasm_snapshot_before) {
@@ -413,38 +297,29 @@ export class OfflineTangle {
                 }
                 break;
             }
-            actions_to_remove += function_call.actions_caused;
         }
 
-        let before = this._actions.length;
 
         let function_call = this.wasm_instance?.instance.exports[function_name] as CallableFunction;
         if (function_call) {
-            let wasm_snapshot_before;
-            if (this._rollback_strategy == RollbackStrategy.WasmSnapshots) {
-                wasm_snapshot_before = this._get_wasm_snapshot();
-            }
+            let wasm_snapshot_before = this._get_wasm_snapshot();
 
             function_call(...args);
 
-            let after = this._actions.length;
+            let hash_after;
 
-            if (after - before > 0 || this._rollback_strategy == RollbackStrategy.WasmSnapshots) {
-                let hash_after;
-
-                if (this.hash_tracking) {
-                    hash_after = this.hash();
-                }
-
-                this.function_calls.splice(i, 0, {
-                    name: function_name,
-                    args: args,
-                    time_stamp: time_stamp,
-                    actions_caused: after - before,
-                    wasm_snapshot_before,
-                    hash_after
-                });
+            if (this.hash_tracking) {
+                hash_after = this.hash();
             }
+
+            this.function_calls.splice(i, 0, {
+                name: function_name,
+                args: args,
+                time_stamp: time_stamp,
+                wasm_snapshot_before,
+                hash_after
+            });
+
         }
 
         // Replay any function calls that occur after this function
@@ -453,20 +328,15 @@ export class OfflineTangle {
             // Note: It is assumed function calls cannot be inserted with an out-of-order offset by the same peer.
             // If that were true the offset would need to be checked and potentially updated here.
 
-            let wasm_snapshot_before;
-            if (this._rollback_strategy == RollbackStrategy.WasmSnapshots) {
-                wasm_snapshot_before = this._get_wasm_snapshot();
-            }
+            let wasm_snapshot_before = this._get_wasm_snapshot();
 
-            let before = this._actions.length;
+
             (this.wasm_instance?.instance.exports[f.name] as CallableFunction)(...f.args);
 
             if (this.hash_tracking) {
                 f.hash_after = this.hash();
             }
 
-            let after = this._actions.length;
-            f.actions_caused = after - before;
             f.wasm_snapshot_before = wasm_snapshot_before;
         }
         return i;
@@ -484,17 +354,9 @@ export class OfflineTangle {
     /// Call a function but ensure its results do not persist and cannot cause a desync.
     /// This can be used for things like drawing or querying from the Wasm
     async call_and_revert(function_name: string, args: Array<number>) {
-        let before = this._actions.length;
-        let snapshot;
-        if (this._rollback_strategy == RollbackStrategy.WasmSnapshots) {
-            snapshot = this._get_wasm_snapshot();
-        }
+        let snapshot = this._get_wasm_snapshot();
         (this.wasm_instance?.instance.exports[function_name] as CallableFunction)(...args);
-        if (snapshot) {
-            this._apply_snapshot(snapshot);
-        }
-        let after = this._actions.length;
-        await this._revert_actions(after - before);
+        this._apply_snapshot(snapshot);
     }
 
     // TODO: These are just helpers and aren't that related to the rest of the code in this:
