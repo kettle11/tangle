@@ -4,4 +4,5 @@
 /web_example/*.wasm
 /web_example/tangle.js
 /web_example/tangle.js.map
+/node_modules
 .DS_Store

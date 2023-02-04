@@ -9,7 +9,7 @@ enum WasmActionType {
 type WasmSnapShot = {
     memory: Uint8Array,
     // The index in the exports and the value to set the export to
-    globals: Array<[number, any]>,
+    globals: Array<[number, unknown]>,
 }
 
 export type TimeStamp = {
@@ -50,32 +50,32 @@ export class OfflineTangle {
     /// The Wasm code used by Tangle itself.
     static _tangle_wasm?: WebAssembly.WebAssemblyInstantiatedSource;
     /// The user Wasm that Tangle is syncing 
-    wasm_instance?: WebAssembly.WebAssemblyInstantiatedSource = undefined;
-    current_time: number = 0;
-    private _recurring_call_interval: number = 0;
-    recurring_call_time: number = 0;
+    wasm_instance!: WebAssembly.WebAssemblyInstantiatedSource;
+    current_time = 0;
+    private _recurring_call_interval = 0;
+    recurring_call_time = 0;
     private _recurring_call_name?: string = "fixed_update";
     function_calls: Array<FunctionCall> = [];
     private _imports: WebAssembly.Imports = {};
 
-    private _upcoming_function_calls: Array<UpcomingFunctionCall> = new Array();
+    private _upcoming_function_calls: Array<UpcomingFunctionCall> = [];
 
     // Optionally track hashes after each function call
-    hash_tracking: boolean = true;
+    hash_tracking = true;
 
     static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports, recurring_call_interval: number): Promise<OfflineTangle> {
-        let decoder = new TextDecoder();
+        const decoder = new TextDecoder();
 
-        let imports_tangle_wasm: WebAssembly.Imports = {
+        const imports_tangle_wasm: WebAssembly.Imports = {
             env: {
                 external_log: function (pointer: number, length: number) {
-                    let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
+                    const memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
                     const message_data = new Uint8Array(memory.buffer, pointer, length);
                     const decoded_string = decoder.decode(new Uint8Array(message_data));
                     console.log(decoded_string);
                 },
                 external_error: function (pointer: number, length: number) {
-                    let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
+                    const memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
                     const message_data = new Uint8Array(memory.buffer, pointer, length);
                     const decoded_string = decoder.decode(new Uint8Array(message_data));
                     console.error(decoded_string);
@@ -87,30 +87,23 @@ export class OfflineTangle {
 
         // TODO: These imports are for AssemblyScript, but they should be optional
         // or part of a more fleshed-out strategy for how to manage imports.
-        if (!imports.env) {
-            imports.env = {};
-        }
+        imports.env ??= {};
+        imports.env.abort ??= () => {
+            console.log("Ignoring call to abort");
+        };
+        imports.env.seed ??= () => {
+            // This is a good random number.
+            // TODO: Find more random ones
+            return 14;
+        };
 
-        if (!imports.env.abort) {
-            imports.env.abort = () => {
-                console.log("Ignoring call to abort");
-            };
-        }
-
-        if (!imports.env.seed) {
-            imports.env.seed = () => {
-                // This is a good random number.
-                return 14;
-            };
-        }
-
-        let tangle = new OfflineTangle();
+        const tangle = new OfflineTangle();
         tangle._recurring_call_interval = recurring_call_interval;
         tangle._imports = imports;
 
         wasm_binary = await process_binary(wasm_binary, true, false);
 
-        let wasm_instance = await WebAssembly.instantiate(wasm_binary, tangle._imports);
+        const wasm_instance = await WebAssembly.instantiate(wasm_binary, tangle._imports);
 
         console.log("[tangle] Heap size: ", (wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer.byteLength);
         tangle.wasm_instance = wasm_instance;
@@ -119,29 +112,29 @@ export class OfflineTangle {
     }
 
     async assign_memory(new_memory_data: Uint8Array) {
-        let mem = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
+        const mem = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
         let page_diff = (new_memory_data.byteLength - mem.buffer.byteLength) / WASM_PAGE_SIZE;
 
         // The only way to "shrink" a Wasm instance is to construct an entirely new 
         // one with a new memory.
-        // Hopefully Wasm gets a better way to shrink modules in the future.
+        // Hopefully Wasm gets a better way to shrink instances in the future.
 
         if (page_diff < 0) {
-            let old_instance = this.wasm_instance!.instance;
-            this.wasm_instance!.instance = await WebAssembly.instantiate(this.wasm_instance!.module, this._imports);
+            const old_instance = this.wasm_instance.instance;
+            this.wasm_instance.instance = await WebAssembly.instantiate(this.wasm_instance.module, this._imports);
             page_diff = (new_memory_data.byteLength - (this.wasm_instance?.instance.exports.memory as WebAssembly.Memory).buffer.byteLength) / WASM_PAGE_SIZE;
 
             // Copy over all globals during the resize.
             for (const [key, v] of Object.entries(old_instance.exports)) {
                 if (key.slice(0, 3) == "wg_") {
-                    (this.wasm_instance!.instance.exports[key] as WebAssembly.Global).value = v;
+                    (this.wasm_instance.instance.exports[key] as WebAssembly.Global).value = v;
                 }
             }
 
-            // Todo: Copy Wasm tables as well.
+            // TODO: Copy Wasm tables as well.
         }
 
-        let old_memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
+        const old_memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
         if (page_diff > 0) {
             old_memory.grow(page_diff);
         }
@@ -166,7 +159,7 @@ export class OfflineTangle {
     async reset_with_wasm_memory(new_memory_data: Uint8Array, new_globals_data: Map<number, number>, current_time: number, recurring_call_time: number) {
         this.assign_memory(new_memory_data);
 
-        let exports = this.wasm_instance!.instance.exports;
+        const exports = this.wasm_instance.instance.exports;
 
         for (const [key, value] of new_globals_data) {
             (exports[`wg_global_${key}`] as WebAssembly.Global).value = value;
@@ -179,13 +172,10 @@ export class OfflineTangle {
     }
 
     remove_history_before(time: number) {
-        let to_remove = 0;
-
         let i = 0;
         for (i = 0; i < this.function_calls.length; i++) {
-            let f = this.function_calls[i];
+            const f = this.function_calls[i];
             if (f.time_stamp.time >= time) {
-
                 break;
             }
         }
@@ -207,7 +197,7 @@ export class OfflineTangle {
             while ((this.current_time - this.recurring_call_time) > this._recurring_call_interval) {
                 this.recurring_call_time += this._recurring_call_interval;
 
-                let time_stamp = {
+                const time_stamp = {
                     time: this.recurring_call_time,
                     player_id: 0
                 };
@@ -225,16 +215,16 @@ export class OfflineTangle {
         // TODO: Assertion for duplicate time stamps.
 
         // TODO: Estimate how long a fixed update takes and use that to not spend too much computation.
-        let start_time = performance.now();
+        const start_time = performance.now();
 
         while (this._upcoming_function_calls[0] && Math.sign(this._upcoming_function_calls[0].time_stamp.time - this.current_time) == -1) {
-            let function_call = this._upcoming_function_calls.shift()!;
+            const function_call = this._upcoming_function_calls.shift()!;
 
             //  console.log("CALLING %s", function_call.function_name, function_call.time_stamp);
 
             await this._call_inner(function_call.function_name, function_call.time_stamp, function_call!.args);
 
-            let time_now = performance.now();
+            const time_now = performance.now();
             if ((start_time - time_now) > (time_progressed * 0.75)) {
                 console.log("[tangle] Bailing out of simulation to avoid missed frames")
                 break;
@@ -247,7 +237,7 @@ export class OfflineTangle {
             // Apply snapshot
             this.assign_memory(wasm_snapshot_before.memory);
 
-            let values = Object.values(this.wasm_instance!.instance.exports);
+            const values = Object.values(this.wasm_instance.instance.exports);
 
             for (let j = 0; j < wasm_snapshot_before.globals.length; j++) {
                 (values[wasm_snapshot_before.globals[j][0]] as WebAssembly.Global).value = wasm_snapshot_before.globals[j][1];
@@ -257,9 +247,9 @@ export class OfflineTangle {
 
     private _get_wasm_snapshot(): WasmSnapShot {
         // This could be optimized by checking ahead of time which globals need to be synced.
-        let globals = new Array();
+        const globals: Array<[number, unknown]> = [];
         let j = 0;
-        for (const [key, v] of Object.entries(this.wasm_instance!.instance.exports)) {
+        for (const [key, v] of Object.entries(this.wasm_instance.instance.exports)) {
             if (key.slice(0, 3) == "wg_") {
                 //  console.log("SNAP SHOT: ", [j, (v as WebAssembly.Global).value]);
                 globals.push([j, (v as WebAssembly.Global).value]);
@@ -268,7 +258,7 @@ export class OfflineTangle {
         }
         return {
             // This nested Uint8Array constructor creates a deep copy.
-            memory: new Uint8Array(new Uint8Array((this.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer)),
+            memory: new Uint8Array(new Uint8Array((this.wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer)),
             globals
         };
 
@@ -285,12 +275,12 @@ export class OfflineTangle {
         let i = this.function_calls.length;
         for (; i > 0; i--) {
             // Keep going until a timestamp less than `time_stamp` is found.
-            let function_call = this.function_calls[i - 1];
+            const function_call = this.function_calls[i - 1];
             if (time_stamp_compare(function_call.time_stamp, time_stamp) == -1) {
 
                 if (this.function_calls[i]) {
                     // This will only happen if we're using the WasmSnapshot RollbackStrategy.
-                    let wasm_snapshot_before = this.function_calls[i].wasm_snapshot_before;
+                    const wasm_snapshot_before = this.function_calls[i].wasm_snapshot_before;
                     if (wasm_snapshot_before) {
                         this._apply_snapshot(wasm_snapshot_before);
                     }
@@ -300,9 +290,9 @@ export class OfflineTangle {
         }
 
 
-        let function_call = this.wasm_instance?.instance.exports[function_name] as CallableFunction;
+        const function_call = this.wasm_instance?.instance.exports[function_name] as CallableFunction;
         if (function_call) {
-            let wasm_snapshot_before = this._get_wasm_snapshot();
+            const wasm_snapshot_before = this._get_wasm_snapshot();
 
             function_call(...args);
 
@@ -324,11 +314,11 @@ export class OfflineTangle {
 
         // Replay any function calls that occur after this function
         for (let j = i + 1; j < this.function_calls.length; j++) {
-            let f = this.function_calls[j];
+            const f = this.function_calls[j];
             // Note: It is assumed function calls cannot be inserted with an out-of-order offset by the same peer.
             // If that were true the offset would need to be checked and potentially updated here.
 
-            let wasm_snapshot_before = this._get_wasm_snapshot();
+            const wasm_snapshot_before = this._get_wasm_snapshot();
 
 
             (this.wasm_instance?.instance.exports[f.name] as CallableFunction)(...f.args);
@@ -354,55 +344,55 @@ export class OfflineTangle {
     /// Call a function but ensure its results do not persist and cannot cause a desync.
     /// This can be used for things like drawing or querying from the Wasm
     async call_and_revert(function_name: string, args: Array<number>) {
-        let snapshot = this._get_wasm_snapshot();
+        const snapshot = this._get_wasm_snapshot();
         (this.wasm_instance?.instance.exports[function_name] as CallableFunction)(...args);
         this._apply_snapshot(snapshot);
     }
 
     // TODO: These are just helpers and aren't that related to the rest of the code in this:
     gzip_encode(data_to_compress: Uint8Array) {
-        let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
-        let exports = OfflineTangle._tangle_wasm!.instance.exports;
+        const memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
+        const exports = OfflineTangle._tangle_wasm!.instance.exports;
 
-        let pointer = (exports.reserve_space as CallableFunction)(data_to_compress.byteLength);
+        const pointer = (exports.reserve_space as CallableFunction)(data_to_compress.byteLength);
         const destination = new Uint8Array(memory.buffer, pointer, data_to_compress.byteLength);
         destination.set(new Uint8Array(data_to_compress));
 
         (exports.gzip_encode as CallableFunction)();
-        let result_pointer = new Uint32Array(memory.buffer, pointer, 2);
-        let result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
+        const result_pointer = new Uint32Array(memory.buffer, pointer, 2);
+        const result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
         // console.log("COMPRESSED LENGTH: ", result_data.byteLength);
         // console.log("COMPRESSION RATIO: ", data_to_compress.byteLength / result_data.byteLength);
         return result_data;
     }
 
     gzip_decode(data_to_decode: Uint8Array) {
-        let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
-        let instance = OfflineTangle._tangle_wasm!.instance.exports;
+        const memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
+        const instance = OfflineTangle._tangle_wasm!.instance.exports;
 
-        let pointer = (instance.reserve_space as CallableFunction)(data_to_decode.byteLength);
+        const pointer = (instance.reserve_space as CallableFunction)(data_to_decode.byteLength);
         const destination = new Uint8Array(memory.buffer, pointer, data_to_decode.byteLength);
         destination.set(data_to_decode);
 
         (instance.gzip_decode as CallableFunction)();
-        let result_pointer = new Uint32Array(memory.buffer, pointer, 2);
-        let result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
+        const result_pointer = new Uint32Array(memory.buffer, pointer, 2);
+        const result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
         return new Uint8Array(result_data);
     }
     hash(): Uint8Array {
-        let data_to_hash = new Uint8Array((this.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer);
+        const data_to_hash = new Uint8Array((this.wasm_instance!.instance.exports.memory as WebAssembly.Memory).buffer);
         return this.hash_data(data_to_hash);
     }
     hash_data(data_to_hash: Uint8Array): Uint8Array {
-        let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
-        let instance = OfflineTangle._tangle_wasm!.instance.exports;
+        const memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
+        const instance = OfflineTangle._tangle_wasm!.instance.exports;
 
-        let pointer = (instance.reserve_space as CallableFunction)(data_to_hash.byteLength);
+        const pointer = (instance.reserve_space as CallableFunction)(data_to_hash.byteLength);
         const destination = new Uint8Array(memory.buffer, pointer, data_to_hash.byteLength);
         destination.set(new Uint8Array(data_to_hash));
 
         (instance.xxh3_128_bit_hash as CallableFunction)();
-        let hashed_result = new Uint8Array(new Uint8Array(memory.buffer, pointer, 16));
+        const hashed_result = new Uint8Array(new Uint8Array(memory.buffer, pointer, 16));
         return hashed_result;
     }
 }
@@ -412,18 +402,18 @@ async function process_binary(wasm_binary: Uint8Array, export_globals: boolean, 
         return wasm_binary;
     }
 
-    let length = wasm_binary.byteLength;
-    let pointer = (OfflineTangle._tangle_wasm?.instance.exports.reserve_space as CallableFunction)(length);
+    const length = wasm_binary.byteLength;
+    const pointer = (OfflineTangle._tangle_wasm?.instance.exports.reserve_space as CallableFunction)(length);
 
-    let memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
+    const memory = OfflineTangle._tangle_wasm?.instance.exports.memory as WebAssembly.Memory;
 
     const data_location = new Uint8Array(memory.buffer, pointer, length);
     data_location.set(new Uint8Array(wasm_binary));
     (OfflineTangle._tangle_wasm?.instance.exports.prepare_wasm as CallableFunction)(export_globals, track_changes);
 
     // TODO: Write these to an output buffer instead of having two calls for them.
-    let output_ptr = (OfflineTangle._tangle_wasm?.instance.exports.get_output_ptr as CallableFunction)();
-    let output_len = (OfflineTangle._tangle_wasm?.instance.exports.get_output_len as CallableFunction)();
+    const output_ptr = (OfflineTangle._tangle_wasm?.instance.exports.get_output_ptr as CallableFunction)();
+    const output_len = (OfflineTangle._tangle_wasm?.instance.exports.get_output_len as CallableFunction)();
     const output_wasm = new Uint8Array(memory.buffer, output_ptr, output_len);
     return output_wasm;
 }

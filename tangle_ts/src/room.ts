@@ -52,13 +52,13 @@ export class Room {
     private _peers: Map<PeerId, Peer> = new Map();
     private _configuration: RoomConfiguration = {};
     private outgoing_data_chunk = new Uint8Array(MAX_MESSAGE_SIZE + 5);
-    my_id: number = 0;
+    my_id = 0;
 
     // Used for testing
     private _artificial_delay = 0;
 
     static async setup(_configuration: RoomConfiguration): Promise<Room> {
-        let room = new Room();
+        const room = new Room();
         await room._setup_inner(_configuration);
         return room;
     }
@@ -72,7 +72,7 @@ export class Room {
         // If the message is too large fragment it. 
         // TODO: If there's not space in the outgoing channel push messages to an outgoing buffer.
 
-        let total_length = data.byteLength;
+        const total_length = data.byteLength;
 
         if (total_length > MAX_MESSAGE_SIZE) {
             this.outgoing_data_chunk[0] = MessageType.MultiPartStart;
@@ -84,7 +84,7 @@ export class Room {
             let data_offset = data.subarray(MAX_MESSAGE_SIZE);
 
             while (data_offset.byteLength > 0) {
-                length = Math.min(data_offset.byteLength, MAX_MESSAGE_SIZE);
+                const length = Math.min(data_offset.byteLength, MAX_MESSAGE_SIZE);
                 this.outgoing_data_chunk[0] = MessageType.MultiPartContinuation;
                 this.outgoing_data_chunk.set(data_offset.subarray(0, length), 1);
                 data_offset = data_offset.subarray(length);
@@ -103,10 +103,10 @@ export class Room {
 
     send_message(data: Uint8Array, peer_id?: PeerId) {
         if (peer_id) {
-            let peer = this._peers.get(peer_id)!;
+            const peer = this._peers.get(peer_id)!;
             this.message_peer_inner(peer, data);
         } else {
-            for (let [_, peer] of this._peers) {
+            for (const [_, peer] of this._peers) {
                 if (!peer.ready) {
                     continue;
                 }
@@ -125,10 +125,10 @@ export class Room {
         this._configuration = room_configuration;
         this._configuration.server_url ??= "tangle-server.fly.dev";
 
-        let room_name = document.location.href;
+        const room_name = document.location.href;
 
-        let connect_to_server = () => {
-            let server_socket = new WebSocket("wss://" + this._configuration.server_url);
+        const connect_to_server = () => {
+            const server_socket = new WebSocket("wss://" + this._configuration.server_url);
 
             let keep_alive_interval: number;
 
@@ -154,7 +154,7 @@ export class Room {
                     // Disconnecting from the WebSocket is considered a full disconnect from the room.
 
                     // Call the on_peer_left handler for each peer
-                    for (let [peer_id, peer] of this._peers) {
+                    for (const [peer_id, peer] of this._peers) {
                         this._configuration.on_peer_left?.(peer_id, Date.now());
                     }
 
@@ -190,12 +190,12 @@ export class Room {
 
                 const message = JSON.parse(json);
                 // peer_id is appended by the server to the end of incoming messages.
-                let peer_ip = event.data.substring(last_index + 1).trim();
-                let peer_id = compute_id_from_ip(peer_ip);
+                const peer_ip = event.data.substring(last_index + 1).trim();
+                const peer_id = compute_id_from_ip(peer_ip);
 
                 if (message.room_name) {
-                    let url = new URL(message.room_name);
-                    let location = document.location;
+                    const url = new URL(message.room_name);
+                    const location = document.location;
 
                     if (url.href != location.href) {
                         console.error("[room] Tried to join a room that doesn't match current host URL");
@@ -207,7 +207,7 @@ export class Room {
 
                     this._current_state = RoomState.Joining;
 
-                    let peers_to_join_ids = message.peers.map(compute_id_from_ip);
+                    const peers_to_join_ids = message.peers.map(compute_id_from_ip);
                     this._peers_to_join = new Set(peers_to_join_ids);
 
                     this._configuration.on_state_change?.(this._current_state);
@@ -223,7 +223,7 @@ export class Room {
                     console.log("[room] Peer joining room: ", peer_id);
                     this.make_rtc_peer_connection(peer_ip, peer_id, server_socket);
                 } else if (message.offer) {
-                    let peer_connection = this.make_rtc_peer_connection(peer_ip, peer_id, server_socket);
+                    const peer_connection = this.make_rtc_peer_connection(peer_ip, peer_id, server_socket);
                     await peer_connection.setRemoteDescription(new RTCSessionDescription(message.offer));
                     const answer = await peer_connection.createAnswer();
                     await peer_connection.setLocalDescription(answer);
@@ -238,7 +238,7 @@ export class Room {
                         console.error("[room] Error adding received ice candidate", e);
                     }
                 } else if (message.disconnected_peer_id) {
-                    let disconnected_peer_id = compute_id_from_ip(message.disconnected_peer_id);
+                    const disconnected_peer_id = compute_id_from_ip(message.disconnected_peer_id);
                     console.log("[room] Peer left: ", disconnected_peer_id);
                     this.remove_peer(disconnected_peer_id, message.time);
                     this._peers_to_join.delete(disconnected_peer_id);
@@ -334,7 +334,7 @@ export class Room {
             if (this._peers.get(peer_id)) {
                 if (event.data.byteLength > 0) {
                     // Defragment the message
-                    let message_data = new Uint8Array(event.data);
+                    const message_data = new Uint8Array(event.data);
                     switch (message_data[0]) {
                         case MessageType.SinglePart: {
                             // Call the user provided callback
@@ -344,16 +344,16 @@ export class Room {
                             break;
                         }
                         case MessageType.MultiPartStart: {
-                            let data = new DataView(message_data.buffer, 1);
-                            let length = data.getUint32(0);
+                            const data = new DataView(message_data.buffer, 1);
+                            const length = data.getUint32(0);
 
-                            let peer = this._peers.get(peer_id)!;
+                            const peer = this._peers.get(peer_id)!;
                             peer.latest_message_data = new Uint8Array(length);
                             this.multipart_data_received(peer, message_data.subarray(5));
                             break;
                         }
                         case MessageType.MultiPartContinuation: {
-                            let peer = this._peers.get(peer_id)!;
+                            const peer = this._peers.get(peer_id)!;
                             this.multipart_data_received(peer, message_data.subarray(1));
                         }
                     }
@@ -372,7 +372,7 @@ export class Room {
         peer.latest_message_offset += data.byteLength;
 
         if (peer.latest_message_offset == peer.latest_message_data.length) {
-            let data = peer.latest_message_data;
+            const data = peer.latest_message_data;
 
             // TODO: This introduces a potential one-frame delay on incoming events.
             // Message received
@@ -385,7 +385,7 @@ export class Room {
     }
 
     private remove_peer(peer_id: PeerId, time: number) {
-        let peer = this._peers.get(peer_id);
+        const peer = this._peers.get(peer_id);
 
         if (peer) {
             peer.connection.close();
