@@ -1,5 +1,4 @@
 export interface RoomConfiguration {
-    name?: string
     server_url?: string
     on_state_change?: (room_state: RoomState) => void;
     on_peer_joined?: (peer_id: PeerId) => void;
@@ -52,10 +51,11 @@ export class Room {
     private _current_state: RoomState = RoomState.Disconnected;
     private _peers: Map<PeerId, Peer> = new Map();
     private _configuration: RoomConfiguration = {};
-    private _current_room_name: String = "";
     private outgoing_data_chunk = new Uint8Array(MAX_MESSAGE_SIZE + 5);
-    private _artificial_delay = 0;
     my_id: number = 0;
+
+    // Used for testing
+    private _artificial_delay = 0;
 
     static async setup(_configuration: RoomConfiguration): Promise<Room> {
         let room = new Room();
@@ -68,7 +68,7 @@ export class Room {
             // TODO: This could result in desyncs if this happens.
             return;
         }
-        // TODO: Verify this
+
         // If the message is too large fragment it. 
         // TODO: If there's not space in the outgoing channel push messages to an outgoing buffer.
 
@@ -121,27 +121,21 @@ export class Room {
         return this._peers.entries().next().value?.[0];
     }
 
-    private async _setup_inner(room__configuration: RoomConfiguration) {
-        onhashchange = (event) => {
-            if (this._current_room_name != document.location.hash.substring(1)) {
-                location.reload();
-                this._current_room_name = document.location.hash.substring(1);
-            }
-        };
+    private async _setup_inner(room_configuration: RoomConfiguration) {
+        this._configuration = room_configuration;
+        this._configuration.server_url ??= "tangle-server.fly.dev";
 
-        this._configuration = room__configuration;
-        this._configuration.name ??= "";
-        this._configuration.server_url ??= "0.0.0.0:8081";
+        let room_name = document.location.href;
 
         let connect_to_server = () => {
-            let server_socket = new WebSocket("ws://" + this._configuration.server_url);
+            let server_socket = new WebSocket("wss://" + this._configuration.server_url);
 
             let keep_alive_interval: number;
 
             server_socket.onopen = () => {
                 console.log("[room] Connection established with server");
-                console.log("[room] Requesting to join room: ", this._configuration.name);
-                server_socket.send(JSON.stringify({ 'join_room': document.location.hash.substring(1) }));
+                console.log("[room] Requesting to join room: ", room_name);
+                server_socket.send(JSON.stringify({ 'join_room': room_name }));
 
                 // Poke the server every 10 seconds to ensure it doesn't drop our connection.
                 // Without this it seems browsers don't send WebSocket native 'pings' as expected.
@@ -200,6 +194,14 @@ export class Room {
                 let peer_id = compute_id_from_ip(peer_ip);
 
                 if (message.room_name) {
+                    let url = new URL(message.room_name);
+                    let location = document.location;
+
+                    if (url.href != location.href) {
+                        console.error("[room] Tried to join a room that doesn't match current host URL");
+                        return;
+                    }
+
                     // Received when joining a room for the first time.
                     console.log("[room] Entering room: ", message.room_name);
 
@@ -216,11 +218,6 @@ export class Room {
                     }
                     this.check_if_joined();
 
-                    // TODO: Make this messing with the URL an optional thing.
-                    document.location =
-                        document.location.origin.toString() +
-                        '#' + message.room_name;
-                    this._current_room_name = message.room_name;
                     this.my_id = compute_id_from_ip(message.your_ip);
                 } else if (message.join_room) {
                     console.log("[room] Peer joining room: ", peer_id);

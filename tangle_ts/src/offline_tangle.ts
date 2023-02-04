@@ -533,8 +533,8 @@ export class OfflineTangle {
         (exports.gzip_encode as CallableFunction)();
         let result_pointer = new Uint32Array(memory.buffer, pointer, 2);
         let result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
-        console.log("COMPRESSED LENGTH: ", result_data.byteLength);
-        console.log("COMPRESSION RATIO: ", data_to_compress.byteLength / result_data.byteLength);
+        // console.log("COMPRESSED LENGTH: ", result_data.byteLength);
+        // console.log("COMPRESSION RATIO: ", data_to_compress.byteLength / result_data.byteLength);
         return result_data;
     }
 

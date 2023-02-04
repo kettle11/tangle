@@ -12,14 +12,13 @@ type FunctionCallMessage = {
 
 enum MessageType {
     WasmCall,
-    RequestHeap,
-    SentHeap,
     TimeProgressed,
+    RequestState,
     SetProgram,
-    DebugShareHistory,
+    SetHeap,
     // Used to figure out roundtrip time.
-    BounceBack,
-    BounceBackReturn
+    Ping,
+    Pong
 }
 
 type PeerData = {
@@ -37,6 +36,12 @@ export enum TangleState {
     RequestingHeap
 }
 
+type TangleConfiguration = {
+    fixed_update_interval?: number;
+    on_state_change_callback?: (state: TangleState, tangle: Tangle) => void
+    accept_new_programs?: boolean,
+}
+
 class UserIdType { }
 export const UserId = new UserIdType();
 
@@ -50,7 +55,205 @@ export class Tangle {
     private _current_program_binary = new Uint8Array();
     private _block_reentrancy = false;
     private _enqueued_inner_calls = new Array(Function());
-    private _debug_enabled = true;
+    private _last_performance_now?: number;
+    private _configuraton?: TangleConfiguration;
+
+    // private _debug_enabled = true;
+
+    static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, tangle_configuration?: TangleConfiguration): Promise<Tangle> {
+        tangle_configuration ??= {};
+        tangle_configuration.accept_new_programs ??= false;
+
+        let tangle = new Tangle();
+
+        await tangle.setup_inner(wasm_binary, wasm_imports, tangle_configuration);
+        return tangle;
+    }
+
+    private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, configuration?: TangleConfiguration) {
+
+        let room_configuration = {
+            on_peer_joined: (peer_id: PeerId) => {
+                this._run_inner_function(async () => {
+                    this._peer_data.set(peer_id, {
+                        last_sent_message: 0,
+                        last_received_message: Number.MAX_VALUE,
+                        round_trip_time: 0,
+                    });
+                    this.room.send_message(this._encode_bounce_back_message(), peer_id);
+                });
+            },
+            on_peer_left: (peer_id: PeerId, time: number) => {
+                this._run_inner_function(async () => {
+                    this._peer_data.delete(peer_id);
+
+                    // TODO: This is not a good way to synchronize when a peer disconnects.
+                    // It will likely work in some cases but it could also easily desync.
+
+                    time = ((this._tangle.current_time + 1000) % 500) + this._tangle.current_time;
+                    if (time < this.earliest_safe_memory_time()) {
+                        console.error("ERROR: POTENTIAL DESYNC DUE TO PEER LEAVING!");
+                    }
+
+                    let time_stamp = {
+                        time,
+                        player_id: 0 // 0 is for events sent by the server.
+                    };
+
+                    console.log("[tangle] calling 'peer_left'");
+                    this._tangle.call_with_time_stamp(time_stamp, "peer_left", [peer_id]);
+                });
+            },
+            on_state_change: (state: RoomState) => {
+                this._run_inner_function(async () => {
+                    // TODO: Change this callback to have room passed in.
+
+                    console.log("[tangle] Room state changed: ", RoomState[state]);
+
+                    switch (state) {
+                        case RoomState.Connected: {
+                            this._request_heap();
+
+                            if (this._peer_data.size == 0) {
+                                // We have no peer so we're connected
+                                this._tangle_state = TangleState.Connected;
+                                configuration?.on_state_change_callback?.(this._tangle_state, this);
+                            }
+                            break;
+                        }
+                        case RoomState.Disconnected: {
+                            this._tangle_state = TangleState.Disconnected;
+                            configuration?.on_state_change_callback?.(this._tangle_state, this);
+                            break;
+                        }
+                        case RoomState.Joining: {
+                            this._tangle_state = TangleState.Disconnected;
+                            configuration?.on_state_change_callback?.(this._tangle_state, this);
+                            break;
+                        }
+                    }
+
+                });
+            },
+            on_message: async (peer_id: PeerId, message: Uint8Array) => {
+                let peer_connected_already = this._peer_data.get(peer_id);
+
+                this._run_inner_function(async () => {
+                    // Ignore messages from peers that have disconnected. 
+                    // TODO: Evaluate if this could cause desyncs.
+
+                    if (!this._peer_data.get(peer_id!)) {
+                        return;
+                    }
+
+                    let message_type = message[0];
+                    let message_data = message.subarray(1);
+
+                    switch (message_type) {
+                        case (MessageType.TimeProgressed): {
+                            let time = this._decode_time_progressed_message(message_data);
+                            this._peer_data.get(peer_id)!.last_received_message = time;
+                            break;
+                        }
+                        case (MessageType.WasmCall): {
+                            let m = this._decode_wasm_call_message(message_data);
+                            this._peer_data.get(peer_id)!.last_received_message = m.time;
+
+                            let time_stamp = {
+                                time: m.time,
+                                player_id: peer_id
+                            };
+
+                            if (this._tangle_state == TangleState.RequestingHeap) {
+                                this._buffered_messages.push({
+                                    function_name: m.function_name,
+                                    time_stamp: time_stamp,
+                                    args: m.args
+                                });
+                            } else {
+                                await this._tangle.call_with_time_stamp(time_stamp, m.function_name, m.args);
+                            }
+
+                            break;
+                        }
+                        case (MessageType.RequestState): {
+                            if (this._configuraton?.accept_new_programs) {
+                                // Also send the program binary.
+                                let program_message = this._encode_new_program_message(this._current_program_binary);
+                                this.room.send_message(program_message);
+                            }
+
+                            let heap_message = this._encode_heap_message();
+                            this.room.send_message(heap_message);
+                            break;
+                        }
+                        case (MessageType.SetProgram): {
+                            if (!this._configuraton?.accept_new_programs) {
+                                console.log("[tangle] Rejecting call to change programs");
+                                return;
+                            }
+
+                            console.log("[tangle] Changing programs");
+
+                            // TODO: This is incorrect. Make sure all peers are aware of their roundtrip average with each-other
+                            let round_trip_time = this._peer_data.get(peer_id)!.round_trip_time;
+                            console.log("[tangle] Round trip offset: ", round_trip_time / 2);
+
+                            let new_program = this._decode_new_program_message(message_data);
+                            this._current_program_binary = new_program;
+                            await this._tangle.reset_with_new_program(new_program, (round_trip_time / 2));
+                            break;
+                        }
+                        case (MessageType.SetHeap): {
+                            console.log("[tangle] Setting heap");
+                            let heap_message = this._decode_heap_message(message_data);
+
+                            // TODO: Get roundtrip time to peer and increase current_time by half of that.
+                            let round_trip_time = this._peer_data.get(peer_id)!.round_trip_time;
+                            console.log("[tangle] Approximate round trip offset: ", round_trip_time / 2);
+
+                            let current_time = heap_message.current_time;
+
+                            await this._tangle.reset_with_wasm_memory(
+                                heap_message.heap_data,
+                                heap_message.global_values,
+                                current_time + (round_trip_time / 2),
+                                heap_message.recurring_call_time,
+                            );
+
+                            for (let m of this._buffered_messages) {
+                                await this._tangle.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
+                            }
+                            this._buffered_messages = [];
+
+                            this._tangle_state = TangleState.Connected;
+                            configuration?.on_state_change_callback?.(this._tangle_state, this);
+                            break;
+                        }
+                        case (MessageType.Ping): {
+                            message[0] = MessageType.Pong;
+                            this.room.send_message(message, peer_id);
+                            break;
+                        }
+                        case (MessageType.Pong): {
+                            let time = this._decode_bounce_back_return(message_data);
+                            this._peer_data.get(peer_id)!.round_trip_time = Date.now() - time;
+                            break;
+                        }
+                    }
+                }, !peer_connected_already);
+            }
+        };
+
+        let fixed_update_interval = configuration?.fixed_update_interval;
+        if (!fixed_update_interval) {
+            fixed_update_interval = 0;
+        }
+
+        this._tangle = await OfflineTangle.setup(wasm_binary, wasm_imports, fixed_update_interval);
+        this.room = await Room.setup(room_configuration);
+        this._current_program_binary = wasm_binary;
+    }
 
     private async _run_inner_function(f: Function, enqueue_condition: boolean = false) {
         if (!this._block_reentrancy && !enqueue_condition) {
@@ -67,13 +270,7 @@ export class Tangle {
         }
     }
 
-    static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: TangleState, tangle: Tangle) => void): Promise<Tangle> {
-        let tangle = new Tangle();
-        await tangle.setup_inner(wasm_binary, wasm_imports, recurring_call_interval, on_state_change_callback);
-        return tangle;
-    }
-
-    private request_heap() {
+    private _request_heap() {
         // Ask an arbitrary peer for the heap
         let lowest_latency_peer = this.room.get_lowest_latency_peer();
         if (lowest_latency_peer) {
@@ -84,9 +281,7 @@ export class Tangle {
 
     /// This actually encodes globals as well, not just the heap.
     private _encode_heap_message(): Uint8Array {
-        // TODO: Send all function calls and events here.
-
-        console.log("WASM MODULE SENDING: ", this._tangle.wasm_instance!.instance.exports);
+        // MAJOR TODO: State needs to be sent to enable rollback.
         let memory = this._tangle.wasm_instance!.instance.exports.memory as WebAssembly.Memory;
         let encoded_data = this._tangle.gzip_encode(new Uint8Array(memory.buffer));
 
@@ -99,10 +294,9 @@ export class Tangle {
         }
         let heap_message = new Uint8Array(encoded_data.byteLength + 1 + 8 + 8 + 4 + (8 + 4 + 1) * globals_count);
         let message_writer = new MessageWriterReader(heap_message);
-        message_writer.write_u8(MessageType.SentHeap);
+        message_writer.write_u8(MessageType.SetHeap);
         message_writer.write_f64(this._tangle.current_time);
         message_writer.write_f64(this._tangle.recurring_call_time);
-        console.log("ENCODING RECURRING CALL TIME: ", this._tangle.recurring_call_time);
 
         // Encode all mutable globals
         message_writer.write_u16(globals_count);
@@ -227,13 +421,13 @@ export class Tangle {
     }
 
     private _encode_request_heap_message(): Uint8Array {
-        this.outgoing_message_buffer[0] = MessageType.RequestHeap;
+        this.outgoing_message_buffer[0] = MessageType.RequestState;
         return this.outgoing_message_buffer.subarray(0, 1);
     }
 
     private _encode_bounce_back_message(): Uint8Array {
         let writer = new MessageWriterReader(this.outgoing_message_buffer);
-        writer.write_u8(MessageType.BounceBack);
+        writer.write_u8(MessageType.Ping);
         writer.write_f64(Date.now());
         return writer.get_result_array();
     }
@@ -243,269 +437,17 @@ export class Tangle {
         return reader.read_f64();
     }
 
-    private _encode_share_history(): Uint8Array {
-        // TODO: Don't use a fixed size buffer and instead resize if necessary.
-        let data = new Uint8Array(50_000);
-
-        let message_writer = new MessageWriterReader(data);
-        message_writer.write_u8(MessageType.DebugShareHistory);
-
-        let history_length = this._tangle.function_calls.length;
-
-        for (let i = 0; i < history_length; i++) {
-
-            let function_call = this._tangle.function_calls[i];
-            message_writer.write_f64(function_call.time_stamp.time);
-            message_writer.write_raw_bytes(function_call.hash_after!);
-
-            message_writer.write_string(function_call.name);
-        }
-
-        return message_writer.get_result_array();
-    }
-
-    private _decode_share_history(data: Uint8Array) {
-        let history = [];
-
-        let message_reader = new MessageWriterReader(data);
-
-        while (message_reader.offset < data.length) {
-            let time = message_reader.read_f64();
-            let hash = message_reader.read_fixed_raw_bytes(16);
-            let function_name = message_reader.read_string();
-
-            history.push({
-                time,
-                hash,
-                function_name
-            });
-        }
-        return history;
-    }
-
-    private async setup_inner(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, recurring_call_interval: number, on_state_change_callback?: (state: TangleState, tangle: Tangle) => void) {
-        let room_configuration = {
-            on_peer_joined: (peer_id: PeerId) => {
-                this._run_inner_function(async () => {
-                    this._peer_data.set(peer_id, {
-                        last_sent_message: 0,
-                        last_received_message: Number.MAX_VALUE,
-                        round_trip_time: 0,
-                    });
-                    this.room.send_message(this._encode_bounce_back_message(), peer_id);
-                });
-            },
-            on_peer_left: (peer_id: PeerId, time: number) => {
-                this._run_inner_function(async () => {
-                    console.log("REMOVE PEER HERE");
-                    this._peer_data.delete(peer_id);
-
-                    // TODO: This is not a good way to synchronize when a peer disconnects.
-                    // It will likely work in some cases but it could also easily desync.
-
-                    time = ((this._tangle.current_time + 1000) % 500) + this._tangle.current_time;
-                    if (time < this.earliest_safe_memory_time()) {
-                        console.error("POTENTIAL DESYNC DUE TO PEER LEAVING!");
-                    }
-
-                    let time_stamp = {
-                        time,
-                        player_id: 0 // 0 is for events sent by the server.
-                    };
-
-                    console.log("CALLING PEER LEFT");
-                    this._tangle.call_with_time_stamp(time_stamp, "peer_left", [peer_id]);
-                });
-            },
-            on_state_change: (state: RoomState) => {
-                this._run_inner_function(async () => {
-                    // TODO: Change this callback to have room passed in.
-
-                    console.log("[tangle] Room state changed: ", RoomState[state]);
-
-                    switch (state) {
-                        case RoomState.Connected: {
-                            this.request_heap();
-
-                            if (this._peer_data.size == 0) {
-                                // We have no peer so we're connected
-                                this._tangle_state = TangleState.Connected;
-                                on_state_change_callback?.(this._tangle_state, this);
-                            }
-                            break;
-                        }
-                        case RoomState.Disconnected: {
-                            this._tangle_state = TangleState.Disconnected;
-                            on_state_change_callback?.(this._tangle_state, this);
-                            break;
-                        }
-                        case RoomState.Joining: {
-                            this._tangle_state = TangleState.Disconnected;
-                            on_state_change_callback?.(this._tangle_state, this);
-                            break;
-                        }
-                    }
-
-                });
-            },
-            on_message: async (peer_id: PeerId, message: Uint8Array) => {
-                let peer_connected_already = this._peer_data.get(peer_id);
-
-                this._run_inner_function(async () => {
-                    // Ignore messages from peers that have disconnected. 
-                    // TODO: Evaluate if this could cause desyncs.
-
-                    if (!this._peer_data.get(peer_id!)) {
-                        return;
-                    }
-
-                    let message_type = message[0];
-                    let message_data = message.subarray(1);
-
-                    switch (message_type) {
-                        case (MessageType.TimeProgressed): {
-                            let time = this._decode_time_progressed_message(message_data);
-                            this._peer_data.get(peer_id)!.last_received_message = time;
-                            break;
-                        }
-                        case (MessageType.WasmCall): {
-                            let m = this._decode_wasm_call_message(message_data);
-                            this._peer_data.get(peer_id)!.last_received_message = m.time;
-
-                            let time_stamp = {
-                                time: m.time,
-                                player_id: peer_id
-                            };
-
-                            if (this._tangle_state == TangleState.RequestingHeap) {
-                                this._buffered_messages.push({
-                                    function_name: m.function_name,
-                                    time_stamp: time_stamp,
-                                    args: m.args
-                                });
-                            } else {
-                                await this._tangle.call_with_time_stamp(time_stamp, m.function_name, m.args);
-                            }
-
-                            break;
-                        }
-                        case (MessageType.RequestHeap): {
-                            // Also send the program binary.
-                            let program_message = this._encode_new_program_message(this._current_program_binary);
-                            this.room.send_message(program_message);
-
-                            let heap_message = this._encode_heap_message();
-                            this.room.send_message(heap_message);
-                            break;
-                        }
-                        case (MessageType.SentHeap): {
-                            console.log("[tangle] Setting heap");
-                            let heap_message = this._decode_heap_message(message_data);
-
-                            // TODO: Get roundtrip time to peer and increase current_time by half of that.
-                            let round_trip_time = this._peer_data.get(peer_id)!.round_trip_time;
-                            console.log("[tangle] Approximate round trip offset: ", round_trip_time / 2);
-
-                            let current_time = heap_message.current_time;
-
-                            console.log("INITIAL RECURRING CALL TIME: ", heap_message.recurring_call_time);
-                            await this._tangle.reset_with_wasm_memory(
-                                heap_message.heap_data,
-                                heap_message.global_values,
-                                current_time + (round_trip_time / 2),
-                                heap_message.recurring_call_time,
-                            );
-
-                            for (let m of this._buffered_messages) {
-                                await this._tangle.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
-                            }
-                            this._buffered_messages = [];
-
-                            this._tangle_state = TangleState.Connected;
-                            on_state_change_callback?.(this._tangle_state, this);
-                            break;
-                        }
-                        case (MessageType.SetProgram): {
-                            // TODO: This is incorrect. Make sure all peers are aware of their roundtrip average with each-other
-                            let round_trip_time = this._peer_data.get(peer_id)!.round_trip_time;
-                            console.log("[tangle] Approximate round trip offset: ", round_trip_time / 2);
-
-                            console.log("SETTING PROGRAM!");
-                            let new_program = this._decode_new_program_message(message_data);
-                            this._current_program_binary = new_program;
-                            await this._tangle.reset_with_new_program(new_program, (round_trip_time / 2));
-                            console.log("DONE SETTING PROGRAM");
-                            break;
-                        }
-                        case (MessageType.DebugShareHistory): {
-                            let remote_history = this._decode_share_history(message_data);
-                            console.log("RECEIVED SHARED HISTORY DUE TO DESYNC");
-                            console.log("SHARED HISTORY: ", this._decode_share_history(message_data));
-
-                            let i = 0;
-                            let j = 0;
-                            while (i < this._tangle.function_calls.length && j < remote_history.length) {
-                                let f0 = this._tangle.function_calls[i];
-                                let f1 = remote_history[j];
-
-                                let time_stamp1 = {
-                                    time: f1.time,
-                                    player_id: peer_id
-                                };
-
-                                let comparison = time_stamp_compare(f0.time_stamp, time_stamp1);
-                                switch (comparison) {
-                                    case -1: {
-                                        i += 1;
-                                        break;
-                                    }
-                                    case 1: {
-                                        j += 1;
-                                        break;
-                                    }
-                                    case 0: {
-                                        // They are equal. Compare properties:
-                                        if (!arrayEquals(f0.hash_after!, f1.hash)) {
-                                            console.log('DESYNC. LOCAL INDEX: %d REMOTE INDEX: %d', i, j);
-                                        }
-                                        i += 1;
-                                        j += 1;
-                                    }
-                                }
-                            }
-                            break;
-                        }
-                        case (MessageType.BounceBack): {
-                            message[0] = MessageType.BounceBackReturn;
-                            this.room.send_message(message, peer_id);
-                            break;
-                        }
-                        case (MessageType.BounceBackReturn): {
-                            let time = this._decode_bounce_back_return(message_data);
-                            this._peer_data.get(peer_id)!.round_trip_time = Date.now() - time;
-                            break;
-                        }
-                    }
-                }, !peer_connected_already);
-            }
-        };
-        this._tangle = await OfflineTangle.setup(wasm_binary, wasm_imports, recurring_call_interval);
-        this.room = await Room.setup(room_configuration);
-        this._current_program_binary = wasm_binary;
-    }
-
     set_program(new_program: Uint8Array) {
         this._run_inner_function(async () => {
-            //   if (!arrayEquals(new_program, this._current_program_binary)) {
-            await this._tangle.reset_with_new_program(
-                new_program,
-                0
-            );
-            this._current_program_binary = new_program;
+            if (!arrayEquals(new_program, this._current_program_binary)) {
+                await this._tangle.reset_with_new_program(
+                    new_program,
+                    0
+                );
+                this._current_program_binary = new_program;
 
-            console.log("SENDING NEW PROGRAM MESSAGE!");
-            this.room.send_message(this._encode_new_program_message(new_program));
-            // }
+                this.room.send_message(this._encode_new_program_message(new_program));
+            }
         });
     }
 
@@ -538,6 +480,7 @@ export class Tangle {
             // peers will have to rollback.
             // This could be a good place to add delay if a peer has higher latency than 
             // everyone else in the room.
+            // Adding a time delay would look something like this:
             // time_stamp.time += 50;
 
             await this._tangle.call_with_time_stamp(time_stamp, function_name, args_processed);
@@ -561,9 +504,9 @@ export class Tangle {
 
     /// Resync with the room, immediately catching up.
     resync() {
-        // TODO: Check for reentrancy
-        console.log("REQUESTING HEAP!");
-        this.request_heap();
+        this._run_inner_function(() => {
+            this._request_heap();
+        });
     }
 
     private earliest_safe_memory_time(): number {
@@ -574,38 +517,57 @@ export class Tangle {
         return earliest_safe_memory;
     }
 
-    private async _progress_time_inner(time_progressed: number) {
-        // TODO: Detect if we're falling behind and can't keep up.
+    private async _progress_time_inner() {
+        let performance_now = performance.now();
 
-        await this._tangle.progress_time(time_progressed);
+        if (this._last_performance_now) {
 
-        // Keep track of when a message was received from each peer
-        // and use that to determine what history is safe to throw away.
-        let earliest_safe_memory = this._tangle.recurring_call_time;
-        for (let [peer_id, value] of this._peer_data) {
-            earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
+            let time_progressed = performance_now - this._last_performance_now;
 
-            // If we haven't messaged our peers in a while send them a message
-            // This lets them know nothing has happened and they can clear memory.
-            // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
-            // it'd be better to figure out if those could be used instead.
-            const KEEP_ALIVE_THRESHOLD = 200;
-            if ((this._tangle.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
-                this.room.send_message(this._encode_time_progressed_message(this._tangle.current_time), peer_id);
+            // Detect if we've fallen behind and need to resynchronize with the room.
+            // This likely occurs in scenarios where connections are a atrocious (in which case this might not be the right check)
+            // or when a tab is suspended for a bit.
+            if (((this._tangle.recurring_call_time + time_progressed) - this._tangle.recurring_call_time) > 2000) {
+                // TODO: This time change means that this peer cannot be trusted as an authority on the room simulation.
+                // The peer should stop sending events and should absolutely not synchronize state with other peers.
+                this._tangle.recurring_call_time = this._tangle.recurring_call_time + time_progressed;
+
+                if (this._peer_data.size > 0) {
+                    console.log("[tangle] Fallen over 2 seconds behind, attempting to resync with room");
+                    this._request_heap();
+                } else {
+                    console.log("[tangle] Fallen over 2 seconds behind but this is a single-player session, so ignoring this");
+                }
             }
+
+            await this._tangle.progress_time(time_progressed);
+
+            // Keep track of when a message was received from each peer
+            // and use that to determine what history is safe to throw away.
+            let earliest_safe_memory = this._tangle.recurring_call_time;
+            for (let [peer_id, value] of this._peer_data) {
+                earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
+
+                // If we haven't messaged our peers in a while send them a message
+                // This lets them know nothing has happened and they can discard history.
+                // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
+                // it'd be better to figure out if those could be used instead.
+                const KEEP_ALIVE_THRESHOLD = 200;
+                if ((this._tangle.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
+                    this.room.send_message(this._encode_time_progressed_message(this._tangle.current_time), peer_id);
+                }
+            }
+
+            // This -100 is for debugging purposes only
+            this._tangle.remove_history_before(earliest_safe_memory - 100);
         }
 
-        // This -100 is for debugging purposes only
-        this._tangle.remove_history_before(earliest_safe_memory - 100);
-
+        this._last_performance_now = performance_now;
     }
-    progress_time(time_progressed: number) {
+    progress_time() {
         this._run_inner_function(async () => {
-            await this._progress_time_inner(time_progressed);
+            await this._progress_time_inner();
         });
-    }
-    get_memory(): WebAssembly.Memory {
-        return this._tangle.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
     }
 }
 
