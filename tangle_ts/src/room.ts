@@ -103,10 +103,11 @@ export class Room {
 
     send_message(data: Uint8Array, peer_id?: PeerId) {
         if (peer_id) {
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
             const peer = this._peers.get(peer_id)!;
             this.message_peer_inner(peer, data);
         } else {
-            for (const [_, peer] of this._peers) {
+            for (const peer of this._peers.values()) {
                 if (!peer.ready) {
                     continue;
                 }
@@ -298,13 +299,12 @@ export class Room {
         };
 
         peer_connection.ondatachannel = (event) => {
-            this._peers.get(peer_id)!.data_channel = event.channel;
+            peer.data_channel = event.channel;
         };
 
         data_channel.onopen = () => {
             this._peers_to_join.delete(peer_id);
-
-            this._peers.get(peer_id)!.ready = true;
+            peer.ready = true;
             this._configuration.on_peer_joined?.(peer_id);
             this.check_if_joined();
         }
@@ -327,13 +327,11 @@ export class Room {
                             const data = new DataView(message_data.buffer, 1);
                             const length = data.getUint32(0);
 
-                            const peer = this._peers.get(peer_id)!;
                             peer.latest_message_data = new Uint8Array(length);
                             this.multipart_data_received(peer, message_data.subarray(5));
                             break;
                         }
                         case MessageType.MultiPartContinuation: {
-                            const peer = this._peers.get(peer_id)!;
                             this.multipart_data_received(peer, message_data.subarray(1));
                         }
                     }
@@ -343,7 +341,8 @@ export class Room {
             }
         }
 
-        this._peers.set(peer_id, { id: peer_id, connection: peer_connection, data_channel, ready: false, latest_message_data: new Uint8Array(0), latest_message_offset: 0 });
+        const peer = { id: peer_id, connection: peer_connection, data_channel, ready: false, latest_message_data: new Uint8Array(0), latest_message_offset: 0 };
+        this._peers.set(peer_id, peer);
         return peer_connection;
     }
 

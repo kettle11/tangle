@@ -290,7 +290,8 @@ export class OfflineTangle {
         // TODO: Estimate how long a fixed update takes and use that to not spend too much computation.
         const start_time = performance.now();
 
-        while (this._upcoming_function_calls[0] && Math.sign(this._upcoming_function_calls[0].time_stamp.time - this.current_time) == -1) {
+        while (this._upcoming_function_calls[0] && this._upcoming_function_calls[0].time_stamp.time < this.current_time) {
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
             const function_call = this._upcoming_function_calls.shift()!;
 
             //  console.log("CALLING %s", function_call.function_name, function_call.time_stamp);

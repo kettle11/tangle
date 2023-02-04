@@ -48,16 +48,18 @@ export const UserId = new UserIdType();
 export class Tangle {
     private _room!: Room;
     private _offline_tangle!: OfflineTangle;
+    private _rust_utilities: RustUtilities;
+
     private _buffered_messages: Array<FunctionCallMessage> = [];
     private _peer_data: Map<PeerId, PeerData> = new Map();
     private _tangle_state = TangleState.Disconnected;
     private _current_program_binary = new Uint8Array();
     private _block_reentrancy = false;
-    private _enqueued_inner_calls = new Array(Function());
+    private _enqueued_inner_calls: Array<() => void> = [];
     private _last_performance_now?: number;
     private _configuraton?: TangleConfiguration;
-    private _rust_utilities: RustUtilities;
     private _outgoing_message_buffer = new Uint8Array(500);
+
 
     // private _debug_enabled = true;
 
@@ -303,6 +305,8 @@ export class Tangle {
         message_writer.write_u16(globals_count);
         for (const [key, v] of Object.entries(exports)) {
             if (key.slice(0, 3) == "wg_") {
+                // Get the index off the end of the name.
+                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
                 const index = parseInt(key.match(/\d+$/)![0]);
                 message_writer.write_u32(index);
                 message_writer.write_tagged_number((v as WebAssembly.Global).value);
@@ -377,6 +381,7 @@ export class Tangle {
 
         // TODO: The set of possible function call names is finite per-module, so this could be
         // turned into a simple index instead of sending the whole string.
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         const text_length = text_encoder.encodeInto(function_string, this._outgoing_message_buffer.subarray(message_writer.offset)).written!;
         return this._outgoing_message_buffer.subarray(0, message_writer.offset + text_length);
     }
@@ -489,7 +494,7 @@ export class Tangle {
             // Network the call
             this._room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, args_processed));
 
-            for (const [_, value] of this._peer_data) {
+            for (const value of this._peer_data.values()) {
                 value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
             }
         });
@@ -512,7 +517,7 @@ export class Tangle {
 
     private earliest_safe_memory_time(): number {
         let earliest_safe_memory = this._offline_tangle.recurring_call_time;
-        for (const [_, value] of this._peer_data) {
+        for (const [, value] of this._peer_data) {
             earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
         }
         return earliest_safe_memory;

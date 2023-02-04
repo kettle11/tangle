@@ -31,6 +31,7 @@ export class MessageWriterReader {
     }
 
     write_string(string: string) {
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         const length = text_encoder.encodeInto(string, this.output.subarray(this.offset + 4)).written!;
         this.data_view.setUint32(this.offset, length);
         this.offset += length + 4;
