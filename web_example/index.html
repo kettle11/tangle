@@ -393,7 +393,7 @@ class Point {
         };
 
 
-        import { Tangle, RoomState, UserId } from "./tangle.js";
+        import { Tangle, TangleState, UserId } from "./tangle.js";
 
         async function run(wasm_binary) {
             var canvas = document.getElementById("myCanvas");
@@ -479,16 +479,19 @@ class Point {
                 window.requestAnimationFrame(animation);
             }
 
-            let tangle = await Tangle.setup(wasm_binary, imports, fixed_update_rate, (state, tangle) => {
-                if (state === RoomState.Connected) {
-                    // Spawn in the room
-                    tangle.call("player_joined", [UserId]);
+            let tangle = await Tangle.setup(wasm_binary, imports, {
+                fixed_update_interval: fixed_update_rate, accept_new_programs: true, on_state_change_callback: (state, tangle) => {
+                    if (state === TangleState.Connected) {
+                        // Spawn in the room
+                        tangle.call("player_joined", [UserId]);
 
-                    animation();
+                        animation();
+                    }
                 }
             });
             window.tangle = tangle;
 
+            /*
             document.onkeyup = async (event) => {
                 if (event.code == "KeyH") {
                     compile_assemblyscript(editor.getValue());
@@ -506,11 +509,21 @@ class Point {
                 if (event.code == "KeyJ") {
                     //tangle.call("player_joined", [UserId]);
                 }
+            };
+            */
 
+            document.onkeydown = async (event) => {
+                let rect = canvas.getBoundingClientRect();
+                tangle.call("key_down", [UserId, event.keyCode]);
+            };
+
+            document.onkeyup = async (event) => {
+                let rect = canvas.getBoundingClientRect();
+                tangle.call("key_up", [UserId, event.keyCode]);
             };
 
             canvas.onpointerdown = async (event) => {
-                //await tangle.call("pointer_down", [UserId, event.clientX, event.clientY]);
+                await tangle.call("pointer_down", [UserId, event.clientX, event.clientY]);
                 //await tangle.call("add_ball", [player_id, event.clientX, event.clientY, Math.random(), Math.random() * 255, Math.random() * 255, Math.random() * 255]);
 
             };
