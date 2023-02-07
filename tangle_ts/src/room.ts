@@ -258,6 +258,7 @@ export class Room {
     }
 
     private make_rtc_peer_connection(peer_ip: string, peer_id: PeerId, server_socket: WebSocket): RTCPeerConnection {
+
         const ICE_SERVERS = [
             { urls: "stun:stun1.l.google.com:19302" },
         ];

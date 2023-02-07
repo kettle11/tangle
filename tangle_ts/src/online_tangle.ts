@@ -57,7 +57,7 @@ export class Tangle {
     private _block_reentrancy = false;
     private _enqueued_inner_calls: Array<() => void> = [];
     private _last_performance_now?: number;
-    private _configuraton?: TangleConfiguration;
+    private _configuration: TangleConfiguration = {};
     private _outgoing_message_buffer = new Uint8Array(500);
 
 
@@ -71,7 +71,8 @@ export class Tangle {
         const offline_tangle = await OfflineTangle.setup(wasm_binary, wasm_imports, tangle_configuration.fixed_update_interval);
 
         const tangle = new Tangle(offline_tangle);
-        await tangle.setup_inner(offline_tangle, wasm_binary, wasm_imports, tangle_configuration);
+        tangle._configuration = tangle_configuration;
+        await tangle.setup_inner(offline_tangle, wasm_binary);
         return tangle;
     }
 
@@ -80,7 +81,15 @@ export class Tangle {
         this._rust_utilities = offline_tangle.rust_utilities;
     }
 
-    private async setup_inner(offline_tangle: OfflineTangle, wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, configuration?: TangleConfiguration) {
+    private _change_state(state: TangleState) {
+        if (this._tangle_state != state) {
+            this._tangle_state = state;
+            this._configuration.on_state_change_callback?.(state, this);
+        }
+        this._tangle_state = state;
+    }
+
+    private async setup_inner(offline_tangle: OfflineTangle, wasm_binary: Uint8Array) {
         const room_configuration = {
             on_peer_joined: (peer_id: PeerId) => {
                 this._run_inner_function(async () => {
@@ -125,19 +134,16 @@ export class Tangle {
 
                             if (this._peer_data.size == 0) {
                                 // We have no peer so we're connected
-                                this._tangle_state = TangleState.Connected;
-                                configuration?.on_state_change_callback?.(this._tangle_state, this);
+                                this._change_state(TangleState.Connected);
                             }
                             break;
                         }
                         case RoomState.Disconnected: {
-                            this._tangle_state = TangleState.Disconnected;
-                            configuration?.on_state_change_callback?.(this._tangle_state, this);
+                            this._change_state(TangleState.Disconnected);
                             break;
                         }
                         case RoomState.Joining: {
-                            this._tangle_state = TangleState.Disconnected;
-                            configuration?.on_state_change_callback?.(this._tangle_state, this);
+                            this._change_state(TangleState.Disconnected);
                             break;
                         }
                     }
@@ -186,7 +192,7 @@ export class Tangle {
                             break;
                         }
                         case (MessageType.RequestState): {
-                            if (this._configuraton?.accept_new_programs) {
+                            if (this._configuration?.accept_new_programs) {
                                 // Also send the program binary.
                                 const program_message = this._encode_new_program_message(this._current_program_binary);
                                 this._room.send_message(program_message);
@@ -197,7 +203,7 @@ export class Tangle {
                             break;
                         }
                         case (MessageType.SetProgram): {
-                            if (!this._configuraton?.accept_new_programs) {
+                            if (!this._configuration?.accept_new_programs) {
                                 console.log("[tangle] Rejecting call to change programs");
                                 return;
                             }
@@ -235,8 +241,7 @@ export class Tangle {
                             }
                             this._buffered_messages = [];
 
-                            this._tangle_state = TangleState.Connected;
-                            configuration?.on_state_change_callback?.(this._tangle_state, this);
+                            this._change_state(TangleState.Connected);
                             break;
                         }
                         case (MessageType.Ping): {
@@ -284,7 +289,7 @@ export class Tangle {
 
     /// This actually encodes globals as well, not just the heap.
     private _encode_heap_message(): Uint8Array {
-        // MAJOR TODO: State needs to be sent so that it's safe for the peer to rollback.
+        // MAJOR TODO: Past state needs to be sent so that it's safe for the peer to rollback.
         const memory = this._offline_tangle.wasm_instance.instance.exports.memory as WebAssembly.Memory;
         const encoded_data = this._rust_utilities.gzip_encode(new Uint8Array(memory.buffer));
 
@@ -574,6 +579,12 @@ export class Tangle {
         this._run_inner_function(async () => {
             await this._progress_time_inner();
         });
+    }
+    read_memory(address: number, length: number): Uint8Array {
+        return this._offline_tangle.read_memory(address, length);
+    }
+    read_string(address: number, length: number): string {
+        return this._offline_tangle.read_string(address, length);
     }
 }
 

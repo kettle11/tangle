@@ -1,6 +1,6 @@
 const WASM_PAGE_SIZE = 65536;
 
-type WasmSnapShot = {
+type WasmSnapshot = {
     memory: Uint8Array,
     // The index in the exports and the value to set the export to
     globals: Array<[number, unknown]>,
@@ -31,7 +31,7 @@ export type FunctionCall = {
     args: Array<number>,
     time_stamp: TimeStamp,
     // Used if the 'WasmSnapshot' RollBackStrategy is used.
-    wasm_snapshot_before?: WasmSnapShot
+    wasm_snapshot_before?: WasmSnapshot
 };
 
 type UpcomingFunctionCall = {
@@ -39,6 +39,8 @@ type UpcomingFunctionCall = {
     args: Array<number>,
     time_stamp: TimeStamp,
 }
+
+const decoder = new TextDecoder();
 
 export class RustUtilities {
     private _rust_utilities: WebAssembly.WebAssemblyInstantiatedSource;
@@ -48,7 +50,6 @@ export class RustUtilities {
     }
 
     static async setup(): Promise<RustUtilities> {
-        const decoder = new TextDecoder();
 
         const imports = {
             env: {
@@ -165,6 +166,7 @@ export class OfflineTangle {
         // TODO: These imports are for AssemblyScript, but they should be optional
         // or part of a more fleshed-out strategy for how to manage imports.
         imports.env ??= {};
+
         imports.env.abort ??= () => {
             console.log("Ignoring call to abort");
         };
@@ -172,6 +174,8 @@ export class OfflineTangle {
             // TODO: Add more entropy
             return 14;
         };
+        let external_log: (a: number, b: number) => void = () => { console.log("Not implemented") };
+        imports.env.external_log ??= (a: number, b: number) => external_log(a, b);
 
         wasm_binary = rust_utilities.process_binary(wasm_binary, true, false);
         const wasm_instance = await WebAssembly.instantiate(wasm_binary, imports);
@@ -181,6 +185,21 @@ export class OfflineTangle {
         tangle._imports = imports;
 
         console.log("[tangle] Heap size: ", (wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer.byteLength);
+
+        // TODO: Think more about what 'standard library' Wasm should be provided.
+        external_log = (pointer: number, length: number) => {
+            const memory = tangle.wasm_instance.instance.exports.memory as WebAssembly.Memory;
+            const message_data = new Uint8Array(memory.buffer, pointer, length);
+            const decoded_string = decoder.decode(new Uint8Array(message_data));
+            console.log(decoded_string);
+        };
+
+        // When a module is setup call its main function immediately.
+        // This may only be useful for Rust.
+        const main = wasm_instance.instance.exports["main"];
+        if (main) {
+            (main as CallableFunction)();
+        }
 
         return tangle;
     }
@@ -221,6 +240,13 @@ export class OfflineTangle {
         this.wasm_instance = await WebAssembly.instantiate(wasm_binary, this._imports);
         // console.log("[tangle] Binary hash of new program: ", this.hash_data(wasm_binary));
 
+        // When a module is setup call its main function immediately.
+        // This may only be useful for Rust.
+        const main = this.wasm_instance.instance.exports["main"];
+        if (main) {
+            (main as CallableFunction)();
+        }
+
         this.function_calls = [];
 
         // TODO: It might be better to not reset time here.
@@ -259,6 +285,16 @@ export class OfflineTangle {
 
     steps_remaining(time_to_progress: number): number {
         return (((this.current_time + time_to_progress) - this.recurring_call_time) / this._recurring_call_interval);
+    }
+
+    read_memory(address: number, length: number): Uint8Array {
+        return new Uint8Array(new Uint8Array((this.wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer, address, length));
+    }
+
+    read_string(address: number, length: number): string {
+        const message_data = this.read_memory(address, length);
+        const decoded_string = decoder.decode(new Uint8Array(message_data));
+        return decoded_string;
     }
 
     async progress_time(time_progressed: number) {
@@ -306,7 +342,7 @@ export class OfflineTangle {
         }
     }
 
-    private async _apply_snapshot(wasm_snapshot_before: WasmSnapShot) {
+    private async _apply_snapshot(wasm_snapshot_before: WasmSnapshot) {
         if (wasm_snapshot_before) {
             // Apply snapshot
             this.assign_memory(wasm_snapshot_before.memory);
@@ -319,7 +355,7 @@ export class OfflineTangle {
         }
     }
 
-    private _get_wasm_snapshot(): WasmSnapShot {
+    private _get_wasm_snapshot(): WasmSnapshot {
         // This could be optimized by checking ahead of time which globals need to be synced.
         const globals: Array<[number, unknown]> = [];
         let j = 0;
@@ -418,9 +454,13 @@ export class OfflineTangle {
     /// Call a function but ensure its results do not persist and cannot cause a desync.
     /// This can be used for things like drawing or querying from the Wasm
     async call_and_revert(function_name: string, args: Array<number>) {
-        const snapshot = this._get_wasm_snapshot();
-        (this.wasm_instance?.instance.exports[function_name] as CallableFunction)(...args);
-        this._apply_snapshot(snapshot);
+        const f = this.wasm_instance?.instance.exports[function_name];
+
+        if (f) {
+            const snapshot = this._get_wasm_snapshot();
+            (f as CallableFunction)(...args);
+            this._apply_snapshot(snapshot);
+        }
     }
 
     hash(): Uint8Array {
