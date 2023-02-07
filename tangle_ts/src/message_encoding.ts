@@ -1,3 +1,11 @@
+import { WasmSnapshot, RustUtilities } from "./offline_tangle.js";
+
+
+enum NumberTag {
+    F64,
+    I64,
+}
+
 const text_encoder = new TextEncoder();
 const text_decoder = new TextDecoder();
 
@@ -128,9 +136,42 @@ export class MessageWriterReader {
             return this.read_i64();
         }
     }
-}
 
-enum NumberTag {
-    F64,
-    I64,
+    encode_wasm_snapshot(rust_utilities: RustUtilities, snapshot: WasmSnapshot): void {
+        const encoded_data = rust_utilities.gzip_encode(new Uint8Array(snapshot.memory.buffer));
+        const globals_count = snapshot.globals.length;
+
+        // Encode all mutable globals
+        this.write_u16(globals_count);
+        for (const value of snapshot.globals) {
+            this.write_u32(value[0]);
+            this.write_tagged_number(value[1] as number | bigint);
+        }
+        this.write_u32(encoded_data.byteLength);
+        this.write_raw_bytes(encoded_data);
+    }
+
+    decode_wasm_snapshot(rust_utilities: RustUtilities): WasmSnapshot {
+        const mutable_globals_length = this.read_u16();
+
+        const globals: Array<[number, unknown]> = [];
+        for (let i = 0; i < mutable_globals_length; i++) {
+            const index = this.read_u32();
+            const value = this.read_tagged_number();
+            globals.push([index, value]);
+        }
+
+        const bytes_length = this.read_u32();
+        const memory = rust_utilities.gzip_decode(this.read_fixed_raw_bytes(bytes_length));
+
+        return {
+            memory,
+            globals
+        };
+    }
+
+    encode_tangle_state(rust_utilities: RustUtilities, tangle: Tangle) {
+        // TODO: Encode all WasmSnapshots including the present.
+        // TODO: Encode all function calls that have occurred in the present or will occur in the future.
+    }
 }
