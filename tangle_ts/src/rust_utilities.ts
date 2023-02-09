@@ -77,7 +77,7 @@ export class RustUtilities {
 
         let offset = 0;
         for (const data of data_to_hash) {
-            const destination = new Uint8Array(memory.buffer, offset, data.byteLength);
+            const destination = new Uint8Array(memory.buffer, pointer + offset, data.byteLength);
             destination.set(new Uint8Array(data));
             offset += data.byteLength;
         }
@@ -87,7 +87,7 @@ export class RustUtilities {
     }
 
     hash_snapshot(wasm_snapshot: WasmSnapshot): Uint8Array {
-        const header = new Uint8Array(2 + wasm_snapshot.globals.length * 9);
+        const header = new Uint8Array(2 + wasm_snapshot.globals.length * (4 + 9));
         const writer = new MessageWriterReader(header);
 
         const globals_count = wasm_snapshot.globals.length;
