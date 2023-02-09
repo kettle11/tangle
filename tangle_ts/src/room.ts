@@ -1,3 +1,5 @@
+import { RustUtilities } from "./rust_utilities";
+
 export interface RoomConfiguration {
     server_url?: string
     on_state_change?: (room_state: RoomState) => void;
@@ -51,14 +53,20 @@ export class Room {
     private _current_state: RoomState = RoomState.Disconnected;
     private _peers: Map<PeerId, Peer> = new Map();
     private _configuration: RoomConfiguration = {};
-    private outgoing_data_chunk = new Uint8Array(MAX_MESSAGE_SIZE + 5);
+    private _outgoing_data_chunk = new Uint8Array(MAX_MESSAGE_SIZE + 5);
+    private _rust_utilities: RustUtilities;
+
     my_id = 0;
 
     // Used for testing
     private _artificial_delay = 0;
 
-    static async setup(_configuration: RoomConfiguration): Promise<Room> {
-        const room = new Room();
+    constructor(rust_utilities: RustUtilities) {
+        this._rust_utilities = rust_utilities;
+    }
+
+    static async setup(_configuration: RoomConfiguration, rust_utilities: RustUtilities): Promise<Room> {
+        const room = new Room(rust_utilities);
         await room._setup_inner(_configuration);
         return room;
     }
@@ -72,31 +80,33 @@ export class Room {
         // If the message is too large fragment it. 
         // TODO: If there's not space in the outgoing channel push messages to an outgoing buffer.
 
-        const total_length = data.byteLength;
+        if (data.byteLength > MAX_MESSAGE_SIZE) {
+            // Gzip encode large messages.
+            // For very small messages Gzip encoding actually makes them bigger.
+            data = this._rust_utilities.gzip_encode(data);
 
-        if (total_length > MAX_MESSAGE_SIZE) {
-            this.outgoing_data_chunk[0] = MessageType.MultiPartStart;
-            new DataView(this.outgoing_data_chunk.buffer).setUint32(1, total_length);
+            this._outgoing_data_chunk[0] = MessageType.MultiPartStart;
+            new DataView(this._outgoing_data_chunk.buffer).setUint32(1, data.byteLength);
 
-            this.outgoing_data_chunk.set(data.subarray(0, MAX_MESSAGE_SIZE), 5);
-            peer.data_channel.send(this.outgoing_data_chunk);
+            this._outgoing_data_chunk.set(data.subarray(0, MAX_MESSAGE_SIZE), 5);
+            peer.data_channel.send(this._outgoing_data_chunk);
 
             let data_offset = data.subarray(MAX_MESSAGE_SIZE);
 
             while (data_offset.byteLength > 0) {
                 const length = Math.min(data_offset.byteLength, MAX_MESSAGE_SIZE);
-                this.outgoing_data_chunk[0] = MessageType.MultiPartContinuation;
-                this.outgoing_data_chunk.set(data_offset.subarray(0, length), 1);
+                this._outgoing_data_chunk[0] = MessageType.MultiPartContinuation;
+                this._outgoing_data_chunk.set(data_offset.subarray(0, length), 1);
                 data_offset = data_offset.subarray(length);
 
-                peer.data_channel.send(this.outgoing_data_chunk.subarray(0, length + 1));
+                peer.data_channel.send(this._outgoing_data_chunk.subarray(0, length + 1));
 
             }
         } else {
-            this.outgoing_data_chunk[0] = MessageType.SinglePart;
-            this.outgoing_data_chunk.set(data, 1);
+            this._outgoing_data_chunk[0] = MessageType.SinglePart;
+            this._outgoing_data_chunk.set(data, 1);
 
-            peer.data_channel.send(this.outgoing_data_chunk.subarray(0, data.byteLength + 1));
+            peer.data_channel.send(this._outgoing_data_chunk.subarray(0, data.byteLength + 1));
         }
 
     }
@@ -320,8 +330,11 @@ export class Room {
                     switch (message_data[0]) {
                         case MessageType.SinglePart: {
                             // Call the user provided callback
+                            // TODO: This introduces a potential one-frame delay on incoming events.
+                            // Message received
+                            const data = message_data.subarray(1);
                             setTimeout(() => {
-                                this._configuration.on_message?.(peer_id, message_data.subarray(1));
+                                this._configuration.on_message?.(peer_id, data);
                             }, this._artificial_delay);
                             break;
                         }
@@ -353,7 +366,8 @@ export class Room {
         peer.latest_message_offset += data.byteLength;
 
         if (peer.latest_message_offset == peer.latest_message_data.length) {
-            const data = peer.latest_message_data;
+            let data = peer.latest_message_data;
+            data = this._rust_utilities.gzip_decode(data);
 
             // TODO: This introduces a potential one-frame delay on incoming events.
             // Message received

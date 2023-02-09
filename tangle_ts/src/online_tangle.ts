@@ -260,7 +260,7 @@ export class Tangle {
             }
         };
 
-        this._room = await Room.setup(room_configuration);
+        this._room = await Room.setup(room_configuration, this._rust_utilities);
         this._current_program_binary = wasm_binary;
     }
 
@@ -508,6 +508,7 @@ export class Tangle {
             const time_budget = time_progressed * 0.7;
             const time_here = performance.now();
 
+            this._time_machine.take_snapshot();
             while (this._time_machine.step()) {
                 // TODO: A better heuristic for when snapshots should be taken.
                 // They could be taken after a set amount of computational overhead.
