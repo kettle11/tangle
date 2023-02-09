@@ -29,6 +29,7 @@ enum MessageType {
     MultiPartStart = 1,
     MultiPartContinuation = 2,
     SinglePart = 3,
+    SinglePartGzipped = 4,
 }
 
 const MAX_MESSAGE_SIZE = 16_000;
@@ -77,14 +78,19 @@ export class Room {
             return;
         }
 
+        // Gzip encode large messages.
+        // For very small messages Gzip encoding actually makes them bigger.
+        // This conditional is separate so that if the Gzip data is < MAX_MESSAGE_SIZE 
+        // it becomes a small message.
+        let message_type = MessageType.SinglePart;
+        if (data.byteLength > MAX_MESSAGE_SIZE) {
+            message_type = MessageType.SinglePartGzipped;
+            data = this._rust_utilities.gzip_encode(data);
+        }
+
         // If the message is too large fragment it. 
         // TODO: If there's not space in the outgoing channel push messages to an outgoing buffer.
-
         if (data.byteLength > MAX_MESSAGE_SIZE) {
-            // Gzip encode large messages.
-            // For very small messages Gzip encoding actually makes them bigger.
-            data = this._rust_utilities.gzip_encode(data);
-
             this._outgoing_data_chunk[0] = MessageType.MultiPartStart;
             new DataView(this._outgoing_data_chunk.buffer).setUint32(1, data.byteLength);
 
@@ -103,7 +109,7 @@ export class Room {
 
             }
         } else {
-            this._outgoing_data_chunk[0] = MessageType.SinglePart;
+            this._outgoing_data_chunk[0] = message_type;
             this._outgoing_data_chunk.set(data, 1);
 
             peer.data_channel.send(this._outgoing_data_chunk.subarray(0, data.byteLength + 1));
@@ -330,9 +336,19 @@ export class Room {
                     switch (message_data[0]) {
                         case MessageType.SinglePart: {
                             // Call the user provided callback
-                            // TODO: This introduces a potential one-frame delay on incoming events.
                             // Message received
                             const data = message_data.subarray(1);
+
+                            // TODO: This introduces a potential one-frame delay on incoming events.
+                            setTimeout(() => {
+                                this._configuration.on_message?.(peer_id, data);
+                            }, this._artificial_delay);
+                            break;
+                        }
+                        case MessageType.SinglePartGzipped: {
+                            // Call the user provided callback
+                            const data = this._rust_utilities.gzip_decode(message_data.subarray(1));
+                            // TODO: This introduces a potential one-frame delay on incoming events.
                             setTimeout(() => {
                                 this._configuration.on_message?.(peer_id, data);
                             }, this._artificial_delay);

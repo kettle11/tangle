@@ -404,8 +404,8 @@ export class TimeMachine {
         for (const event of this._events) {
             size += event.args.length * 8;
         }
-        size += 2 + (4 + 8) * snapshot.globals.length;
-        size += 4 + snapshot.memory.buffer.byteLength + 1;
+        size += 2 + (4 + 9) * snapshot.globals.length;
+        size += 4 + snapshot.memory.buffer.byteLength;
 
         const writer = new MessageWriterReader(new Uint8Array(size));
 
