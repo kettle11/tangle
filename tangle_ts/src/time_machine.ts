@@ -27,6 +27,7 @@ export type FunctionCall = {
     function_export_index: number,
     args: Array<number>,
     time_stamp: TimeStamp,
+    record_hash?: boolean
 };
 
 export type WasmSnapshot = {
@@ -161,7 +162,7 @@ export class TimeMachine {
     }
 
     /// Returns the function call of this instance.
-    async call_with_time_stamp(function_export_index: number, args: Array<number>, time_stamp: TimeStamp) {
+    async call_with_time_stamp(function_export_index: number, args: Array<number>, time_stamp: TimeStamp, record_hash = false) {
         // TODO:
         // LEFT OFF HERE:
         // This goes to -1 which is incorrect.
@@ -205,7 +206,8 @@ export class TimeMachine {
         this._events.splice(i, 0, {
             function_export_index,
             args,
-            time_stamp
+            time_stamp,
+            record_hash
         });
     }
 
@@ -289,7 +291,14 @@ export class TimeMachine {
         const function_call = this._events[this._next_run_event_index];
         if (function_call && function_call.time_stamp.time <= this._target_time) {
             const f = this._exports[function_call.function_export_index] as CallableFunction;
+            if (function_call.record_hash) {
+                console.log("HASH BEFORE: ", this.hash_wasm_state());
+            }
             f(...function_call.args);
+            if (function_call.record_hash) {
+                console.log("HASH AFTER: ", this.hash_wasm_state());
+                console.log(this._events.slice(0, this._next_run_event_index + 1));
+            }
             this._next_run_event_index += 1;
             return true;
         }
@@ -303,6 +312,8 @@ export class TimeMachine {
     }
 
     remove_history_before(time: number) {
+        return;
+
         // Remove all events and snapshots that occurred before this time.
         // Progress the safe time. 
         // Decrement _next_run_event_index.
@@ -329,7 +340,8 @@ export class TimeMachine {
         this._earliest_safe_time = time;
     }
 
-    private _get_wasm_snapshot(): WasmSnapshot {
+    // `deep` specifies if the memory is deep-copied for this snapshot. 
+    private _get_wasm_snapshot(deep = true): WasmSnapshot {
         const globals: Array<[number, unknown]> = [];
 
         const export_values = Object.values(this._wasm_instance.instance.exports);
@@ -346,9 +358,14 @@ export class TimeMachine {
             time_stamp = function_call.time_stamp;
         }
 
+        let memory = new Uint8Array((this._wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer);
+        if (deep) {
+            memory = new Uint8Array(memory);
+        }
+
         return {
             // This nested Uint8Array constructor creates a deep copy.
-            memory: new Uint8Array(new Uint8Array((this._wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer)),
+            memory,
             globals,
             time_stamp
         };
@@ -395,6 +412,7 @@ export class TimeMachine {
     }
 
     encode(first_byte: number): Uint8Array {
+        console.log("[time-machine] Encoding with hash: ", this.hash_wasm_state());
         // For bandwidth / performance reasons only send encode
         // the earliest safe snapshot and all subsequent events.
         // It's up to the decoding TimeMachine to catchup.
@@ -422,7 +440,17 @@ export class TimeMachine {
         writer.write_f64(this._earliest_safe_time);
         writer.write_f64(this._fixed_update_time);
         writer.write_f64(this._target_time);
-        writer.write_f64(this._next_run_event_index);
+
+
+        // This finds the _next_run_event_index to send the peer.
+        // This is very similar to a rollback but it occurs for the new joining peer.
+        let i = 0;
+        for (; i <= this._events.length; i++) {
+            if (time_stamp_compare(this._events[i].time_stamp, snapshot.time_stamp) != -1) {
+                break;
+            }
+        }
+        writer.write_f64(i);
 
         // Encode events
         writer.write_u32(this._events.length);
@@ -445,6 +473,10 @@ export class TimeMachine {
         }
         writer.write_u32(snapshot.memory.buffer.byteLength);
         writer.write_raw_bytes(new Uint8Array(snapshot.memory.buffer));
+
+        // Debugging
+        console.log("[time-machine] Hash of sent snapshot: ", this.rust_utilities.hash_snapshot(snapshot));
+
         return writer.get_result_array();
     }
 
@@ -472,10 +504,26 @@ export class TimeMachine {
         }
 
         const wasm_snapshot = reader.read_wasm_snapshot();
+        console.log("[time-machine] Hash of received snapshot: ", this.rust_utilities.hash_snapshot(wasm_snapshot));
+
         // TODO: This is obviously not the real TimeStamp.
         // Evaluate if WasmSnapshot really needs to have a TimeStamp.
         wasm_snapshot.time_stamp = { time: 0, player_id: 0 };
         this._apply_snapshot(wasm_snapshot);
+
+        for (const v of wasm_snapshot.globals) {
+            console.log("SETTING %d to: ", v[0], v[1]);
+        }
+
+        const values = Object.values(this._exports);
+        for (const i of this._global_indices) {
+            console.log("GLOBAL VALUE: ", values[i]);
+        }
+        console.log("[time-machine] Decoded with hash: ", this.hash_wasm_state());
+    }
+
+    hash_wasm_state(): Uint8Array {
+        return this.rust_utilities.hash_snapshot(this._get_wasm_snapshot(false));
     }
 
 }

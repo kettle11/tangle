@@ -180,8 +180,6 @@ export class Tangle {
                                 player_id: peer_id
                             };
 
-                            console.log("INCOMING WASM CALL: ", this._time_machine.get_function_name(m.function_index));
-
                             if (this._tangle_state == TangleState.RequestingHeap) {
                                 this._buffered_messages.push({
                                     function_export_index: m.function_index,
@@ -189,8 +187,8 @@ export class Tangle {
                                     args: m.args
                                 });
                             } else {
-                                console.log("CALLING WASM: ", this._time_machine.get_function_name(m.function_index));
-                                await this._time_machine.call_with_time_stamp(m.function_index, m.args, time_stamp);
+                                console.log("Remote Wasm call: ", this._time_machine.get_function_name(m.function_index));
+                                await this._time_machine.call_with_time_stamp(m.function_index, m.args, time_stamp, true);
                             }
 
                             break;
@@ -439,7 +437,7 @@ export class Tangle {
 
             const function_index = this._time_machine.get_function_export_index(function_name);
             if (function_index !== undefined) {
-                await this._time_machine.call_with_time_stamp(function_index, args_processed, time_stamp);
+                await this._time_machine.call_with_time_stamp(function_index, args_processed, time_stamp, true);
 
                 // Network the call
                 console.log("SENDING MESSAGE: ", function_name);
