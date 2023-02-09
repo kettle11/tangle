@@ -1,6 +1,8 @@
+import { RustUtilities } from "./rust_utilities";
+
 const WASM_PAGE_SIZE = 65536;
 
-type WasmSnapshot = {
+export type WasmSnapshot = {
     memory: Uint8Array,
     // The index in the exports and the value to set the export to
     globals: Array<[number, unknown]>,
@@ -34,117 +36,13 @@ export type FunctionCall = {
     wasm_snapshot_before?: WasmSnapshot
 };
 
-type UpcomingFunctionCall = {
-    function_name: string,
-    args: Array<number>,
-    time_stamp: TimeStamp,
-}
-
 const decoder = new TextDecoder();
-
-export class RustUtilities {
-    private _rust_utilities: WebAssembly.WebAssemblyInstantiatedSource;
-
-    constructor(rust_utilities: WebAssembly.WebAssemblyInstantiatedSource) {
-        this._rust_utilities = rust_utilities;
-    }
-
-    static async setup(): Promise<RustUtilities> {
-
-        const imports = {
-            env: {
-                external_log: function (pointer: number, length: number) {
-                    const memory = rust_utilities.instance.exports.memory as WebAssembly.Memory;
-                    const message_data = new Uint8Array(memory.buffer, pointer, length);
-                    const decoded_string = decoder.decode(new Uint8Array(message_data));
-                    console.log(decoded_string);
-                },
-                external_error: function (pointer: number, length: number) {
-                    const memory = rust_utilities.instance.exports.memory as WebAssembly.Memory;
-                    const message_data = new Uint8Array(memory.buffer, pointer, length);
-                    const decoded_string = decoder.decode(new Uint8Array(message_data));
-                    console.error(decoded_string);
-                },
-            }
-        };
-        const rust_utilities = await WebAssembly.instantiateStreaming(fetch("rust_utilities.wasm"), imports);
-        return new RustUtilities(rust_utilities);
-    }
-
-    gzip_decode(data_to_decode: Uint8Array) {
-        const memory = this._rust_utilities.instance.exports.memory as WebAssembly.Memory;
-        const instance = this._rust_utilities.instance.exports;
-
-        const pointer = (instance.reserve_space as CallableFunction)(data_to_decode.byteLength);
-        const destination = new Uint8Array(memory.buffer, pointer, data_to_decode.byteLength);
-        destination.set(data_to_decode);
-
-        (instance.gzip_decode as CallableFunction)();
-        const result_pointer = new Uint32Array(memory.buffer, pointer, 2);
-        const result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
-        return new Uint8Array(result_data);
-    }
-
-
-    // TODO: These are just helpers and aren't that related to the rest of the code in this:
-    gzip_encode(data_to_compress: Uint8Array) {
-        const memory = this._rust_utilities.instance.exports.memory as WebAssembly.Memory;
-        const exports = this._rust_utilities.instance.exports;
-
-        const pointer = (exports.reserve_space as CallableFunction)(data_to_compress.byteLength);
-        const destination = new Uint8Array(memory.buffer, pointer, data_to_compress.byteLength);
-        destination.set(new Uint8Array(data_to_compress));
-
-        (exports.gzip_encode as CallableFunction)();
-        const result_pointer = new Uint32Array(memory.buffer, pointer, 2);
-        const result_data = new Uint8Array(memory.buffer, result_pointer[0], result_pointer[1]);
-        // console.log("COMPRESSED LENGTH: ", result_data.byteLength);
-        // console.log("COMPRESSION RATIO: ", data_to_compress.byteLength / result_data.byteLength);
-        return result_data;
-    }
-
-
-    hash_data(data_to_hash: Uint8Array): Uint8Array {
-        const memory = this._rust_utilities.instance.exports.memory as WebAssembly.Memory;
-        const instance = this._rust_utilities.instance.exports;
-
-        const pointer = (instance.reserve_space as CallableFunction)(data_to_hash.byteLength);
-        const destination = new Uint8Array(memory.buffer, pointer, data_to_hash.byteLength);
-        destination.set(new Uint8Array(data_to_hash));
-
-        (instance.xxh3_128_bit_hash as CallableFunction)();
-        const hashed_result = new Uint8Array(new Uint8Array(memory.buffer, pointer, 16));
-        return hashed_result;
-    }
-
-    process_binary(wasm_binary: Uint8Array, export_globals: boolean, track_changes: boolean) {
-        if (!(export_globals || track_changes)) {
-            return wasm_binary;
-        }
-
-        const length = wasm_binary.byteLength;
-        const pointer = (this._rust_utilities.instance.exports.reserve_space as CallableFunction)(length);
-
-        const memory = this._rust_utilities.instance.exports.memory as WebAssembly.Memory;
-
-        const data_location = new Uint8Array(memory.buffer, pointer, length);
-        data_location.set(new Uint8Array(wasm_binary));
-        (this._rust_utilities.instance.exports.prepare_wasm as CallableFunction)(export_globals, track_changes);
-
-        // TODO: Write these to an output buffer instead of having two calls for them.
-        const output_ptr = (this._rust_utilities.instance.exports.get_output_ptr as CallableFunction)();
-        const output_len = (this._rust_utilities.instance.exports.get_output_len as CallableFunction)();
-        const output_wasm = new Uint8Array(memory.buffer, output_ptr, output_len);
-        return output_wasm;
-    }
-}
 
 export class OfflineTangle {
     /// The user Wasm that Tangle is syncing 
     wasm_instance: WebAssembly.WebAssemblyInstantiatedSource;
     current_time = 0;
     recurring_call_time = 0;
-    function_calls: Array<FunctionCall> = [];
     rust_utilities: RustUtilities;
 
     // Optionally track hashes after each function call
@@ -153,7 +51,9 @@ export class OfflineTangle {
     private _recurring_call_interval = 0;
     private _recurring_call_name?: string = "fixed_update";
     private _imports: WebAssembly.Imports = {};
-    private _upcoming_function_calls: Array<UpcomingFunctionCall> = [];
+
+    function_calls: Array<FunctionCall> = [];
+    private _upcoming_function_calls: Array<FunctionCall> = [];
 
     private constructor(wasm_instance: WebAssembly.WebAssemblyInstantiatedSource, rust_utilities: RustUtilities) {
         this.wasm_instance = wasm_instance;
@@ -224,7 +124,7 @@ export class OfflineTangle {
                 }
             }
 
-            // TODO: Copy Wasm tables as well.
+            // TODO: Copy mutable Wasm tables as well.
         }
 
         const old_memory = this.wasm_instance?.instance.exports.memory as WebAssembly.Memory;
@@ -312,7 +212,7 @@ export class OfflineTangle {
                 };
 
                 this._upcoming_function_calls.push({
-                    function_name: this._recurring_call_name,
+                    name: this._recurring_call_name,
                     time_stamp,
                     args: []
                 });
@@ -332,7 +232,7 @@ export class OfflineTangle {
 
             //  console.log("CALLING %s", function_call.function_name, function_call.time_stamp);
 
-            await this._call_inner(function_call.function_name, function_call.time_stamp, function_call.args);
+            await this._call_inner(function_call.name, function_call.time_stamp, function_call.args);
 
             const time_now = performance.now();
             if ((start_time - time_now) > (time_progressed * 0.75)) {
@@ -399,7 +299,6 @@ export class OfflineTangle {
             }
         }
 
-
         const function_call = this.wasm_instance?.instance.exports[function_name] as CallableFunction;
         if (function_call) {
             const wasm_snapshot_before = this._get_wasm_snapshot();
@@ -430,7 +329,6 @@ export class OfflineTangle {
 
             const wasm_snapshot_before = this._get_wasm_snapshot();
 
-
             (this.wasm_instance?.instance.exports[f.name] as CallableFunction)(...f.args);
 
             if (this.hash_tracking) {
@@ -445,7 +343,7 @@ export class OfflineTangle {
     /// Returns the function call of this instance.
     async call_with_time_stamp(time_stamp: TimeStamp, function_name: string, args: Array<number>) {
         this._upcoming_function_calls.push({
-            function_name,
+            name: function_name,
             args,
             time_stamp
         });

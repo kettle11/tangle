@@ -1,14 +1,9 @@
 import { PeerId, Room, RoomState } from "./room.js";
-import { arrayEquals, OfflineTangle, TimeStamp, RustUtilities } from "./offline_tangle.js";
+import { TimeMachine, FunctionCall } from "./time_machine";
+import { RustUtilities } from "./rust_utilities.js";
 import { MessageWriterReader } from "./message_encoding.js";
 
 export { RoomState, PeerId } from "./room.js";
-
-type FunctionCallMessage = {
-    function_name: string,
-    time_stamp: TimeStamp
-    args: Array<number>
-}
 
 enum MessageType {
     WasmCall,
@@ -27,9 +22,6 @@ type PeerData = {
     round_trip_time: number,
 }
 
-const text_encoder = new TextEncoder();
-const text_decoder = new TextDecoder();
-
 export enum TangleState {
     Disconnected,
     Connected,
@@ -47,10 +39,10 @@ export const UserId = new UserIdType();
 
 export class Tangle {
     private _room!: Room;
-    private _offline_tangle!: OfflineTangle;
+    private _time_machine!: TimeMachine;
     private _rust_utilities: RustUtilities;
 
-    private _buffered_messages: Array<FunctionCallMessage> = [];
+    private _buffered_messages: Array<FunctionCall> = [];
     private _peer_data: Map<PeerId, PeerData> = new Map();
     private _tangle_state = TangleState.Disconnected;
     private _current_program_binary = new Uint8Array();
@@ -60,6 +52,7 @@ export class Tangle {
     private _configuration: TangleConfiguration = {};
     private _outgoing_message_buffer = new Uint8Array(500);
 
+    private _message_time_offset = 0;
 
     // private _debug_enabled = true;
 
@@ -68,17 +61,17 @@ export class Tangle {
         tangle_configuration.accept_new_programs ??= false;
         tangle_configuration.fixed_update_interval ??= 0;
 
-        const offline_tangle = await OfflineTangle.setup(wasm_binary, wasm_imports, tangle_configuration.fixed_update_interval);
+        const time_machine = await TimeMachine.setup(wasm_binary, wasm_imports, tangle_configuration.fixed_update_interval);
 
-        const tangle = new Tangle(offline_tangle);
+        const tangle = new Tangle(time_machine);
         tangle._configuration = tangle_configuration;
-        await tangle.setup_inner(offline_tangle, wasm_binary);
+        await tangle.setup_inner(time_machine, wasm_binary);
         return tangle;
     }
 
-    constructor(offline_tangle: OfflineTangle) {
-        this._offline_tangle = offline_tangle;
-        this._rust_utilities = offline_tangle.rust_utilities;
+    constructor(time_machine: TimeMachine) {
+        this._time_machine = time_machine;
+        this._rust_utilities = time_machine.rust_utilities;
     }
 
     private _change_state(state: TangleState) {
@@ -89,7 +82,7 @@ export class Tangle {
         this._tangle_state = state;
     }
 
-    private async setup_inner(offline_tangle: OfflineTangle, wasm_binary: Uint8Array) {
+    private async setup_inner(time_machine: TimeMachine, wasm_binary: Uint8Array) {
         const room_configuration = {
             on_peer_joined: (peer_id: PeerId) => {
                 this._run_inner_function(async () => {
@@ -108,7 +101,8 @@ export class Tangle {
                     // TODO: This is not a good way to synchronize when a peer disconnects.
                     // It will likely work in some cases but it could also easily desync.
 
-                    time = ((this._offline_tangle.current_time + 1000) % 500) + this._offline_tangle.current_time;
+                    /*
+                    time = ((this._time_machine.current_time + 1000) % 500) + this._offline_tangle.current_time;
                     if (time < this.earliest_safe_memory_time()) {
                         console.error("ERROR: POTENTIAL DESYNC DUE TO PEER LEAVING!");
                     }
@@ -120,6 +114,7 @@ export class Tangle {
 
                     console.log("[tangle] calling 'peer_left'");
                     this._offline_tangle.call_with_time_stamp(time_stamp, "peer_left", [peer_id]);
+                    */
                 });
             },
             on_state_change: (state: RoomState) => {
@@ -181,12 +176,12 @@ export class Tangle {
 
                             if (this._tangle_state == TangleState.RequestingHeap) {
                                 this._buffered_messages.push({
-                                    function_name: m.function_name,
+                                    function_export_index: m.function_index,
                                     time_stamp: time_stamp,
                                     args: m.args
                                 });
                             } else {
-                                await this._offline_tangle.call_with_time_stamp(time_stamp, m.function_name, m.args);
+                                await this._time_machine.call_with_time_stamp(m.function_index, m.args, time_stamp);
                             }
 
                             break;
@@ -198,8 +193,9 @@ export class Tangle {
                                 this._room.send_message(program_message);
                             }
 
-                            const heap_message = this._encode_heap_message();
-                            this._room.send_message(heap_message);
+                            // TODO: Send program
+                            // const heap_message = this._encode_heap_message();
+                            // this._room.send_message(heap_message);
                             break;
                         }
                         case (MessageType.SetProgram): {
@@ -208,6 +204,8 @@ export class Tangle {
                                 return;
                             }
 
+                            console.error("TODO: Set program");
+                            /*
                             console.log("[tangle] Changing programs");
 
                             // TODO: This is incorrect. Make sure all peers are aware of their roundtrip average with each-other
@@ -216,11 +214,16 @@ export class Tangle {
 
                             const new_program = this._decode_new_program_message(message_data);
                             this._current_program_binary = new_program;
-                            await this._offline_tangle.reset_with_new_program(new_program, (round_trip_time / 2));
+                            await this._time_machine.reset_with_new_program(new_program, (round_trip_time / 2));
+                            */
                             break;
                         }
                         case (MessageType.SetHeap): {
                             console.log("[tangle] Setting heap");
+                            console.error("TODO TANGLE: SET HEAP");
+                            // TODO: Load a WasmSnapshot message and apply it to the current TimeMachine.
+
+                            /*
                             const heap_message = this._decode_heap_message(message_data);
 
                             // TODO: Get roundtrip time to peer and increase current_time by half of that.
@@ -242,6 +245,7 @@ export class Tangle {
                             this._buffered_messages = [];
 
                             this._change_state(TangleState.Connected);
+                            */
                             break;
                         }
                         case (MessageType.Ping): {
@@ -287,67 +291,6 @@ export class Tangle {
         }
     }
 
-    /// This actually encodes globals as well, not just the heap.
-    private _encode_heap_message(): Uint8Array {
-        // MAJOR TODO: Past state needs to be sent so that it's safe for the peer to rollback.
-        const memory = this._offline_tangle.wasm_instance.instance.exports.memory as WebAssembly.Memory;
-        const encoded_data = this._rust_utilities.gzip_encode(new Uint8Array(memory.buffer));
-
-        const exports = this._offline_tangle.wasm_instance.instance.exports;
-        let globals_count = 0;
-        for (const key of Object.keys(exports)) {
-            if (key.slice(0, 3) == "wg_") {
-                globals_count += 1;
-            }
-        }
-        const heap_message = new Uint8Array(encoded_data.byteLength + 1 + 8 + 8 + 4 + (8 + 4 + 1) * globals_count);
-        const message_writer = new MessageWriterReader(heap_message);
-        message_writer.write_u8(MessageType.SetHeap);
-        message_writer.write_f64(this._offline_tangle.current_time);
-        message_writer.write_f64(this._offline_tangle.recurring_call_time);
-
-        // Encode all mutable globals
-        message_writer.write_u16(globals_count);
-        for (const [key, v] of Object.entries(exports)) {
-            if (key.slice(0, 3) == "wg_") {
-                // Get the index off the end of the name.
-                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                const index = parseInt(key.match(/\d+$/)![0]);
-                message_writer.write_u32(index);
-                message_writer.write_tagged_number((v as WebAssembly.Global).value);
-            }
-        }
-        message_writer.write_raw_bytes(encoded_data);
-
-        return heap_message;
-    }
-
-    private _decode_heap_message(data: Uint8Array) {
-        const message_reader = new MessageWriterReader(data);
-
-        const current_time = message_reader.read_f64();
-        const recurring_call_time = message_reader.read_f64();
-        const mutable_globals_length = message_reader.read_u16();
-
-        const global_values = new Map();
-        for (let i = 0; i < mutable_globals_length; i++) {
-            const index = message_reader.read_u32();
-            const value = message_reader.read_tagged_number();
-            global_values.set(index, value);
-        }
-
-        // TODO: When implemented all function calls and events need to be decoded here.
-        const heap_data = this._rust_utilities.gzip_decode(message_reader.read_remaining_raw_bytes());
-
-        return {
-            current_time,
-            recurring_call_time,
-            heap_data,
-            global_values
-        };
-    }
-
-
     private _encode_new_program_message(program_data: Uint8Array): Uint8Array {
         const encoded_data = this._rust_utilities.gzip_encode(program_data);
 
@@ -364,10 +307,11 @@ export class Tangle {
         return data;
     }
 
-    private _encode_wasm_call_message(function_string: string, time: number, args: Array<number> /*, hash?: Uint8Array*/): Uint8Array {
+    private _encode_wasm_call_message(function_index: number, time: number, args: Array<number> /*, hash?: Uint8Array*/): Uint8Array {
         const message_writer = new MessageWriterReader(this._outgoing_message_buffer);
         message_writer.write_u8(MessageType.WasmCall);
 
+        message_writer.write_u32(function_index);
         message_writer.write_f64(time);
         message_writer.write_u8(args.length);
 
@@ -384,16 +328,13 @@ export class Tangle {
         }
         */
 
-        // TODO: The set of possible function call names is finite per-module, so this could be
-        // turned into a simple index instead of sending the whole string.
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        const text_length = text_encoder.encodeInto(function_string, this._outgoing_message_buffer.subarray(message_writer.offset)).written!;
-        return this._outgoing_message_buffer.subarray(0, message_writer.offset + text_length);
+        return this._outgoing_message_buffer.subarray(0, message_writer.offset);
     }
 
     private _decode_wasm_call_message(data: Uint8Array) {
         const message_reader = new MessageWriterReader(data);
 
+        const function_index = message_reader.read_u32();
         const time = message_reader.read_f64();
         const args_length = message_reader.read_u8();
 
@@ -411,9 +352,8 @@ export class Tangle {
         }
         */
 
-        const function_name = text_decoder.decode(data.subarray(message_reader.offset));
         return {
-            function_name,
+            function_index,
             time,
             args,
             hash
@@ -449,6 +389,8 @@ export class Tangle {
     }
 
     set_program(new_program: Uint8Array) {
+        // TODO!
+        /*
         this._run_inner_function(async () => {
             if (!arrayEquals(new_program, this._current_program_binary)) {
                 await this._offline_tangle.reset_with_new_program(
@@ -460,6 +402,7 @@ export class Tangle {
                 this._room.send_message(this._encode_new_program_message(new_program));
             }
         });
+        */
     }
 
     private _process_args(args: Array<number | UserIdType>): Array<number> {
@@ -483,9 +426,12 @@ export class Tangle {
 
             // TODO: Ensure each message has a unique timestamp.
             const time_stamp = {
-                time: this._offline_tangle.current_time,
+                time: this._time_machine.target_time() + this._message_time_offset,
                 player_id: this._room.my_id
             };
+
+            // Ensure events each have a unique timestamp.
+            this._message_time_offset += .0001;
 
             // Adding time delay here decreases responsivity but also decreases the likelihood
             // peers will have to rollback.
@@ -494,13 +440,17 @@ export class Tangle {
             // Adding a time delay would look something like this:
             // time_stamp.time += 50;
 
-            await this._offline_tangle.call_with_time_stamp(time_stamp, function_name, args_processed);
+            const function_index = this._time_machine.get_function_export_index(function_name);
+            if (function_index) {
+                await this._time_machine.call_with_time_stamp(function_index, args_processed, time_stamp);
 
-            // Network the call
-            this._room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, args_processed));
+                // Network the call
+                // TODO: Network this call
+                // this._room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, args_processed));
 
-            for (const value of this._peer_data.values()) {
-                value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
+                for (const value of this._peer_data.values()) {
+                    value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
+                }
             }
         });
     }
@@ -509,7 +459,10 @@ export class Tangle {
     call_and_revert(function_name: string, args: Array<number>) {
         this._run_inner_function(async () => {
             const args_processed = this._process_args(args);
-            this._offline_tangle.call_and_revert(function_name, args_processed);
+            const function_index = this._time_machine.get_function_export_index(function_name);
+            if (function_index) {
+                this._time_machine.call_and_revert(function_index, args_processed);
+            }
         });
     }
 
@@ -520,24 +473,25 @@ export class Tangle {
         });
     }
 
-    private earliest_safe_memory_time(): number {
-        let earliest_safe_memory = this._offline_tangle.recurring_call_time;
-        for (const [, value] of this._peer_data) {
-            earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
-        }
-        return earliest_safe_memory;
+    progress_time() {
+        this._run_inner_function(async () => {
+            await this._progress_time_inner();
+        });
     }
 
     private async _progress_time_inner() {
         const performance_now = performance.now();
 
         if (this._last_performance_now) {
+            this._message_time_offset = 0;
 
             const time_progressed = performance_now - this._last_performance_now;
 
+            // TODO: Detect if we've fallen too far behind.
             // Detect if we've fallen behind and need to resynchronize with the room.
             // This likely occurs in scenarios where connections are a atrocious (in which case this might not be the right check)
             // or when a tab is suspended for a bit.
+            /*
             if (((this._offline_tangle.recurring_call_time + time_progressed) - this._offline_tangle.recurring_call_time) > 2000) {
                 // TODO: This time change means that this peer cannot be trusted as an authority on the room simulation.
                 // The peer should stop sending events and should absolutely not synchronize state with other peers.
@@ -550,12 +504,27 @@ export class Tangle {
                     console.log("[tangle] Fallen over 2 seconds behind but this is a single-player session, so ignoring this");
                 }
             }
+            */
 
-            await this._offline_tangle.progress_time(time_progressed);
+            await this._time_machine.progress_time(time_progressed);
+
+            const time_budget = time_progressed * 0.7;
+            const time_here = performance.now();
+
+            while (this._time_machine.step()) {
+                // TODO: A better heuristic for when snapshots should be taken.
+                // They could be taken after a set amount of computational overhead.
+                this._time_machine.take_snapshot();
+                if ((performance.now() - time_here) > time_budget) {
+                    break;
+                }
+            }
+
+            // Remove history that's safe to remove.
 
             // Keep track of when a message was received from each peer
             // and use that to determine what history is safe to throw away.
-            let earliest_safe_memory = this._offline_tangle.recurring_call_time;
+            let earliest_safe_memory = this._time_machine.current_simulation_time();
             for (const [peer_id, value] of this._peer_data) {
                 earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
 
@@ -564,27 +533,25 @@ export class Tangle {
                 // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
                 // it'd be better to figure out if those could be used instead.
                 const KEEP_ALIVE_THRESHOLD = 200;
-                if ((this._offline_tangle.current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
-                    this._room.send_message(this._encode_time_progressed_message(this._offline_tangle.current_time), peer_id);
+                const current_time = this._time_machine.target_time();
+                if ((current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
+                    this._room.send_message(this._encode_time_progressed_message(current_time), peer_id);
                 }
             }
 
-            // This -100 is for debugging purposes only
-            this._offline_tangle.remove_history_before(earliest_safe_memory - 100);
+            // DEBUG: This -100 is for debugging purposes only
+            this._time_machine.remove_history_before(earliest_safe_memory - 100);
+
         }
 
         this._last_performance_now = performance_now;
     }
-    progress_time() {
-        this._run_inner_function(async () => {
-            await this._progress_time_inner();
-        });
-    }
+
     read_memory(address: number, length: number): Uint8Array {
-        return this._offline_tangle.read_memory(address, length);
+        return this._time_machine.read_memory(address, length);
     }
     read_string(address: number, length: number): string {
-        return this._offline_tangle.read_string(address, length);
+        return this._time_machine.read_string(address, length);
     }
 }
 

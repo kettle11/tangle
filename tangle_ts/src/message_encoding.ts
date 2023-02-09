@@ -1,5 +1,5 @@
-import { WasmSnapshot, RustUtilities } from "./offline_tangle.js";
-
+import { WasmSnapshot, TimeStamp } from "./offline_tangle.js";
+import { RustUtilities } from "./rust_utilities.js";
 
 enum NumberTag {
     F64,
@@ -170,8 +170,15 @@ export class MessageWriterReader {
         };
     }
 
-    encode_tangle_state(rust_utilities: RustUtilities, tangle: Tangle) {
-        // TODO: Encode all WasmSnapshots including the present.
-        // TODO: Encode all function calls that have occurred in the present or will occur in the future.
+    encode_time_stamp(time_stamp: TimeStamp) {
+        this.write_f64(time_stamp.time);
+        this.write_f64(time_stamp.player_id);
+    }
+
+    decodee_time_stamp(): TimeStamp {
+        return {
+            time: this.read_f64(),
+            player_id: this.read_f64()
+        }
     }
 }
