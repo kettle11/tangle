@@ -438,7 +438,7 @@ export class Tangle {
             // time_stamp.time += 50;
 
             const function_index = this._time_machine.get_function_export_index(function_name);
-            if (function_index) {
+            if (function_index !== undefined) {
                 await this._time_machine.call_with_time_stamp(function_index, args_processed, time_stamp);
 
                 // Network the call
