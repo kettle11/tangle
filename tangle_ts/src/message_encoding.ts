@@ -1,5 +1,4 @@
-import { WasmSnapshot, TimeStamp } from "./offline_tangle.js";
-import { RustUtilities } from "./rust_utilities.js";
+import { WasmSnapshot, TimeStamp } from "./time_machine";
 
 enum NumberTag {
     F64,
@@ -137,8 +136,7 @@ export class MessageWriterReader {
         }
     }
 
-    encode_wasm_snapshot(rust_utilities: RustUtilities, snapshot: WasmSnapshot): void {
-        const encoded_data = rust_utilities.gzip_encode(new Uint8Array(snapshot.memory.buffer));
+    write_wasm_snapshot(snapshot: WasmSnapshot): void {
         const globals_count = snapshot.globals.length;
 
         // Encode all mutable globals
@@ -147,11 +145,11 @@ export class MessageWriterReader {
             this.write_u32(value[0]);
             this.write_tagged_number(value[1] as number | bigint);
         }
-        this.write_u32(encoded_data.byteLength);
-        this.write_raw_bytes(encoded_data);
+        this.write_u32(snapshot.memory.byteLength);
+        this.write_raw_bytes(snapshot.memory);
     }
 
-    decode_wasm_snapshot(rust_utilities: RustUtilities): WasmSnapshot {
+    read_wasm_snapshot(): WasmSnapshot {
         const mutable_globals_length = this.read_u16();
 
         const globals: Array<[number, unknown]> = [];
@@ -162,20 +160,23 @@ export class MessageWriterReader {
         }
 
         const bytes_length = this.read_u32();
-        const memory = rust_utilities.gzip_decode(this.read_fixed_raw_bytes(bytes_length));
+        const memory = this.read_fixed_raw_bytes(bytes_length);
 
         return {
             memory,
-            globals
+            globals,
+            // TODO: This is obviously not the real TimeStamp.
+            // Evaluate if WasmSnapshot really needs to have a TimeStamp.
+            time_stamp: { time: 0, player_id: 0 }
         };
     }
 
-    encode_time_stamp(time_stamp: TimeStamp) {
+    write_time_stamp(time_stamp: TimeStamp) {
         this.write_f64(time_stamp.time);
         this.write_f64(time_stamp.player_id);
     }
 
-    decodee_time_stamp(): TimeStamp {
+    read_time_stamp(): TimeStamp {
         return {
             time: this.read_f64(),
             player_id: this.read_f64()

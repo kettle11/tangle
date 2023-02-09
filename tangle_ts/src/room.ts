@@ -220,6 +220,7 @@ export class Room {
                     this.check_if_joined();
 
                     this.my_id = compute_id_from_ip(message.your_ip);
+                    console.log("[room] My id is: %d", this.my_id);
                 } else if (message.join_room) {
                     console.log("[room] Peer joining room: ", peer_id);
                     this.make_rtc_peer_connection(peer_ip, peer_id, server_socket);

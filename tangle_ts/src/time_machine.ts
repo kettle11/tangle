@@ -58,6 +58,7 @@ export class TimeMachine {
 
     private _global_indices: Array<number> = [];
     private _exports: Array<WebAssembly.ExportValue> = [];
+    private _export_keys: Array<string> = [];
 
     // To facilitate simpler storage, serialization, and networking function calls
     // are associated with an index instead of a string.
@@ -69,6 +70,7 @@ export class TimeMachine {
     private constructor(wasm_instance: WebAssembly.WebAssemblyInstantiatedSource, rust_utilities: RustUtilities) {
         this._wasm_instance = wasm_instance;
         this._exports = Object.values(wasm_instance.instance.exports);
+        this._export_keys = Object.keys(wasm_instance.instance.exports);
         this.rust_utilities = rust_utilities;
     }
 
@@ -154,6 +156,10 @@ export class TimeMachine {
         return this._function_name_to_index.get(function_name);
     }
 
+    get_function_name(function_index: number): string | undefined {
+        return this._export_keys[function_index];
+    }
+
     /// Returns the function call of this instance.
     async call_with_time_stamp(function_export_index: number, args: Array<number>, time_stamp: TimeStamp) {
         // TODO:
@@ -190,6 +196,7 @@ export class TimeMachine {
         }
 
         if (i < this._next_run_event_index) {
+            console.log("ROLLBACK NEEDED");
             // This will cause a rollback next time `simulate_forward` is called.
             this._need_to_rollback_to_index = i;
             this._next_run_event_index = i;
@@ -255,19 +262,20 @@ export class TimeMachine {
             // Apply the most recent snapshot.
             let i = this._snapshots.length - 1;
             for (; i >= 0; --i) {
-                if (time_stamp_compare(time_stamp, this._snapshots[i].time_stamp) != 1) {
+                if (time_stamp_compare(time_stamp, this._snapshots[i].time_stamp) != -1) {
                     break;
                 }
             }
+
             const snap_shot = this._snapshots[i];
             this._apply_snapshot(snap_shot);
             // Remove future snapshots
             this._snapshots.splice(i, this._snapshots.length - i);
 
-            // Reapply events between this snapshot and the rollback point.
-            i = this._events.length;
+            // Move _next_run_event_index to the event after this snapshot.
+            i = this._need_to_rollback_to_index;
             for (; i >= 0; --i) {
-                if (time_stamp_compare(this._events[i].time_stamp, snap_shot.time_stamp) != 1) {
+                if (time_stamp_compare(this._events[i].time_stamp, snap_shot.time_stamp) == -1) {
                     i += 1;
                     break;
                 }
@@ -386,7 +394,22 @@ export class TimeMachine {
         new Uint8Array(old_memory.buffer).set(new_memory_data);
     }
 
-    private _encode(writer: MessageWriterReader) {
+    encode(first_byte: number): Uint8Array {
+        // For bandwidth / performance reasons only send encode
+        // the earliest safe snapshot and all subsequent events.
+        // It's up to the decoding TimeMachine to catchup.
+        const snapshot = this._snapshots[0];
+
+        let size = 1 + 8 * 4 + 4 + (4 + 8 + 8 + 1) * this._events.length;
+        for (const event of this._events) {
+            size += event.args.length * 8;
+        }
+        size += 2 + (4 + 8) * snapshot.globals.length;
+        size += 4 + snapshot.memory.buffer.byteLength + 1;
+
+        const writer = new MessageWriterReader(new Uint8Array(size));
+
+        writer.write_u8(first_byte);
         // TODO: The corresponding decode
 
         // Encode _earliest_safe_time
@@ -395,17 +418,6 @@ export class TimeMachine {
         // Encode _next_run_event_index
         // Encode _events
         // Encode _snapshot
-
-        // For bandwidth / performance reasons only send encode
-        // the earliest safe snapshot and all subsequent events.
-        // It's up to the decoding TimeMachine to catchup.
-        const snapshot = this._snapshots[0];
-        let next_event_index = 0;
-        for (; next_event_index <= this._events.length; ++next_event_index) {
-            if (time_stamp_compare(this._events[next_event_index].time_stamp, snapshot.time_stamp) == 1) {
-                break;
-            }
-        }
 
         writer.write_f64(this._earliest_safe_time);
         writer.write_f64(this._fixed_update_time);
@@ -416,7 +428,7 @@ export class TimeMachine {
         writer.write_u32(this._events.length);
         for (const event of this._events) {
             writer.write_u32(event.function_export_index);
-            writer.encode_time_stamp(event.time_stamp);
+            writer.write_time_stamp(event.time_stamp);
             writer.write_u8(event.args.length);
             for (const arg of event.args) {
                 writer.write_f64(arg);
@@ -433,6 +445,37 @@ export class TimeMachine {
         }
         writer.write_u32(snapshot.memory.buffer.byteLength);
         writer.write_raw_bytes(new Uint8Array(snapshot.memory.buffer));
+        return writer.get_result_array();
+    }
+
+    decode_and_apply(reader: MessageWriterReader) {
+        this._earliest_safe_time = reader.read_f64();
+        this._fixed_update_time = reader.read_f64();
+        this._target_time = reader.read_f64();
+        this._next_run_event_index = reader.read_f64();
+
+        const events_length = reader.read_u32();
+        this._events = new Array(events_length);
+        for (let i = 0; i < events_length; ++i) {
+            const function_export_index = reader.read_u32();
+            const time_stamp = reader.read_time_stamp();
+            const args_length = reader.read_u8();
+            const args = new Array(args_length);
+            for (let j = 0; j < args_length; ++j) {
+                args[j] = reader.read_f64();
+            }
+            this._events[i] = {
+                function_export_index,
+                time_stamp,
+                args
+            };
+        }
+
+        const wasm_snapshot = reader.read_wasm_snapshot();
+        // TODO: This is obviously not the real TimeStamp.
+        // Evaluate if WasmSnapshot really needs to have a TimeStamp.
+        wasm_snapshot.time_stamp = { time: 0, player_id: 0 };
+        this._apply_snapshot(wasm_snapshot);
     }
 
 }

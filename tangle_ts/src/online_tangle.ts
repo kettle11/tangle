@@ -119,8 +119,6 @@ export class Tangle {
             },
             on_state_change: (state: RoomState) => {
                 this._run_inner_function(async () => {
-                    // TODO: Change this callback to have room passed in.
-
                     console.log("[tangle] Room state changed: ", RoomState[state]);
 
                     switch (state) {
@@ -148,11 +146,19 @@ export class Tangle {
             on_message: async (peer_id: PeerId, message: Uint8Array) => {
                 const peer_connected_already = this._peer_data.get(peer_id);
 
+                const message_type = message[0];
+                if (message_type == MessageType.WasmCall) {
+                    const message_data = message.subarray(1);
+                    const m = this._decode_wasm_call_message(message_data);
+                    console.log("INCOMING WASM CALL HERE: ", this._time_machine.get_function_name(m.function_index));
+                }
+
                 this._run_inner_function(async () => {
                     // Ignore messages from peers that have disconnected. 
                     // TODO: Evaluate if this could cause desyncs.
                     const peer = this._peer_data.get(peer_id);
                     if (!peer) {
+                        console.log("REJECTED MESSAGE FROM UNCONNECTED PEER: ", peer_id);
                         return;
                     }
 
@@ -174,6 +180,8 @@ export class Tangle {
                                 player_id: peer_id
                             };
 
+                            console.log("INCOMING WASM CALL: ", this._time_machine.get_function_name(m.function_index));
+
                             if (this._tangle_state == TangleState.RequestingHeap) {
                                 this._buffered_messages.push({
                                     function_export_index: m.function_index,
@@ -181,6 +189,7 @@ export class Tangle {
                                     args: m.args
                                 });
                             } else {
+                                console.log("CALLING WASM: ", this._time_machine.get_function_name(m.function_index));
                                 await this._time_machine.call_with_time_stamp(m.function_index, m.args, time_stamp);
                             }
 
@@ -193,9 +202,8 @@ export class Tangle {
                                 this._room.send_message(program_message);
                             }
 
-                            // TODO: Send program
-                            // const heap_message = this._encode_heap_message();
-                            // this._room.send_message(heap_message);
+                            const heap_message = this._time_machine.encode(MessageType.SetHeap);
+                            this._room.send_message(heap_message);
                             break;
                         }
                         case (MessageType.SetProgram): {
@@ -219,33 +227,22 @@ export class Tangle {
                             break;
                         }
                         case (MessageType.SetHeap): {
-                            console.log("[tangle] Setting heap");
-                            console.error("TODO TANGLE: SET HEAP");
-                            // TODO: Load a WasmSnapshot message and apply it to the current TimeMachine.
+                            console.log("[tangle] Applying TimeMachine state from peer");
 
-                            /*
-                            const heap_message = this._decode_heap_message(message_data);
-
-                            // TODO: Get roundtrip time to peer and increase current_time by half of that.
                             const round_trip_time = peer.round_trip_time;
                             console.log("[tangle] Approximate round trip offset: ", round_trip_time / 2);
+                            this._time_machine.decode_and_apply(new MessageWriterReader(message_data));
 
-                            const current_time = heap_message.current_time;
-
-                            await this._offline_tangle.reset_with_wasm_memory(
-                                heap_message.heap_data,
-                                heap_message.global_values,
-                                current_time + (round_trip_time / 2),
-                                heap_message.recurring_call_time,
-                            );
-
+                            // Apply any messages that were received as we were waiting for this to load.
                             for (const m of this._buffered_messages) {
-                                await this._offline_tangle.call_with_time_stamp(m.time_stamp, m.function_name, m.args);
+                                await this._time_machine.call_with_time_stamp(m.function_export_index, m.args, m.time_stamp,);
                             }
                             this._buffered_messages = [];
 
+                            // Progress the target time to approximately catch up to the remote peer.
+                            this._time_machine.progress_time(round_trip_time / 2);
+
                             this._change_state(TangleState.Connected);
-                            */
                             break;
                         }
                         case (MessageType.Ping): {
@@ -424,13 +421,13 @@ export class Tangle {
             // As-is this design makes it trivial for peers to spoof each-other.
             const args_processed = this._process_args(args);
 
-            // TODO: Ensure each message has a unique timestamp.
             const time_stamp = {
                 time: this._time_machine.target_time() + this._message_time_offset,
                 player_id: this._room.my_id
             };
 
             // Ensure events each have a unique timestamp.
+            // In practice this tiny offset should be of no consequence.
             this._message_time_offset += .0001;
 
             // Adding time delay here decreases responsivity but also decreases the likelihood
@@ -445,8 +442,8 @@ export class Tangle {
                 await this._time_machine.call_with_time_stamp(function_index, args_processed, time_stamp);
 
                 // Network the call
-                // TODO: Network this call
-                // this._room.send_message(this._encode_wasm_call_message(function_name, time_stamp.time, args_processed));
+                console.log("SENDING MESSAGE: ", function_name);
+                this._room.send_message(this._encode_wasm_call_message(function_index, time_stamp.time, args_processed));
 
                 for (const value of this._peer_data.values()) {
                     value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
