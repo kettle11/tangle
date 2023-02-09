@@ -1,3 +1,5 @@
+import { MessageWriterReader } from "./message_encoding";
+import { WasmSnapshot } from "./time_machine";
 
 const decoder = new TextDecoder();
 
@@ -62,18 +64,43 @@ export class RustUtilities {
         return result_data;
     }
 
+    hash_data(...data_to_hash: Array<Uint8Array>): Uint8Array {
+        let byteLength = 0;
+        for (const data of data_to_hash) {
+            byteLength += data.byteLength;
+        }
 
-    hash_data(data_to_hash: Uint8Array): Uint8Array {
         const memory = this._rust_utilities.instance.exports.memory as WebAssembly.Memory;
         const instance = this._rust_utilities.instance.exports;
 
-        const pointer = (instance.reserve_space as CallableFunction)(data_to_hash.byteLength);
-        const destination = new Uint8Array(memory.buffer, pointer, data_to_hash.byteLength);
-        destination.set(new Uint8Array(data_to_hash));
+        const pointer = (instance.reserve_space as CallableFunction)(byteLength);
 
+        let offset = 0;
+        for (const data of data_to_hash) {
+            const destination = new Uint8Array(memory.buffer, offset, data.byteLength);
+            destination.set(new Uint8Array(data));
+            offset += data.byteLength;
+        }
         (instance.xxh3_128_bit_hash as CallableFunction)();
         const hashed_result = new Uint8Array(new Uint8Array(memory.buffer, pointer, 16));
         return hashed_result;
+    }
+
+    hash_snapshot(wasm_snapshot: WasmSnapshot): Uint8Array {
+        const header = new Uint8Array(2 + wasm_snapshot.globals.length * 9);
+        const writer = new MessageWriterReader(header);
+
+        const globals_count = wasm_snapshot.globals.length;
+
+        // Encode all mutable globals
+        writer.write_u16(globals_count);
+        for (const value of wasm_snapshot.globals) {
+            writer.write_u32(value[0]);
+            writer.write_tagged_number(value[1] as number | bigint);
+        }
+
+        const result = this.hash_data(writer.get_result_array(), new Uint8Array(wasm_snapshot.memory.buffer));
+        return result;
     }
 
     process_binary(wasm_binary: Uint8Array, export_globals: boolean, track_changes: boolean) {
