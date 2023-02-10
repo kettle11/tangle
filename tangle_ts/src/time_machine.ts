@@ -163,9 +163,9 @@ export class TimeMachine {
 
     /// Returns the function call of this instance.
     async call_with_time_stamp(function_export_index: number, args: Array<number>, time_stamp: TimeStamp, record_hash = false) {
-        // TODO:
-        // LEFT OFF HERE:
-        // This goes to -1 which is incorrect.
+        // To avoid excessive reordering insert recurring function calls that
+        // will occur before this function call.
+        this._progress_recurring_function_calls(time_stamp.time);
 
         let i = this._events.length - 1;
         outer_loop:
@@ -184,9 +184,6 @@ export class TimeMachine {
                     break;
             }
         }
-        // To avoid excessive reordering insert recurring function calls that
-        // will occur before this function call.
-        this._progress_recurring_function_calls(time_stamp.time);
 
         if (time_stamp.time < this._earliest_safe_time) {
             // TODO: This is an error. It's no longer possible to add events in the past.
@@ -195,6 +192,7 @@ export class TimeMachine {
         }
 
         if ((i + 1) < this._next_run_event_index) {
+            console.log("ROLLBACK NEEDED!");
             // This will cause a rollback next time `simulate_forward` is called.
             this._need_to_rollback_to_index = i;
         }
@@ -206,6 +204,14 @@ export class TimeMachine {
             time_stamp,
             record_hash
         });
+
+        if (this._events[i] && !(time_stamp_compare(this._events[i].time_stamp, this._events[i + 1].time_stamp) == -1)) {
+            console.error("TIME STAMP OUT OF ORDER AFTER SPLICE0!");
+        }
+
+        if (this._events[i + 2] && !(time_stamp_compare(this._events[i + 1].time_stamp, this._events[i + 2].time_stamp) == -1)) {
+            console.error("TIME STAMP OUT OF ORDER AFTER SPLICE1!");
+        }
     }
 
     /// Call a function but ensure its results do not persist and cannot cause a desync.
@@ -289,11 +295,11 @@ export class TimeMachine {
         if (function_call && function_call.time_stamp.time <= this._target_time) {
             const f = this._exports[function_call.function_export_index] as CallableFunction;
             if (function_call.record_hash) {
-                console.log("HASH BEFORE: ", this.hash_wasm_state());
+                // console.log("HASH BEFORE: ", this.hash_wasm_state());
             }
             f(...function_call.args);
             if (function_call.record_hash) {
-                console.log("HASH AFTER: ", this.hash_wasm_state());
+                // console.log("HASH AFTER: ", this.hash_wasm_state());
             }
             this._next_run_event_index += 1;
             return true;
@@ -309,7 +315,6 @@ export class TimeMachine {
 
     remove_history_before(time: number) {
         return;
-
         // Remove all events and snapshots that occurred before this time.
         // Progress the safe time. 
         // Decrement _next_run_event_index.
@@ -484,6 +489,11 @@ export class TimeMachine {
 
         const events_length = reader.read_u32();
         this._events = new Array(events_length);
+
+        let last_time_stamp = {
+            time: -1,
+            player_id: 0,
+        };
         for (let i = 0; i < events_length; ++i) {
             const function_export_index = reader.read_u32();
             const time_stamp = reader.read_time_stamp();
@@ -497,6 +507,11 @@ export class TimeMachine {
                 time_stamp,
                 args
             };
+
+            if (!(time_stamp_compare(last_time_stamp, time_stamp) == -1)) {
+                console.log("ERROR: INCOMING TIME STAMPS OUT OF ORDER");
+            }
+            last_time_stamp = time_stamp;
         }
 
         const wasm_snapshot = reader.read_wasm_snapshot();
