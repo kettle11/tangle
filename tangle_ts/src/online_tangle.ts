@@ -225,22 +225,24 @@ export class Tangle {
                             break;
                         }
                         case (MessageType.SetHeap): {
-                            console.log("[tangle] Applying TimeMachine state from peer");
+                            if (this._tangle_state != TangleState.Connected) {
+                                console.log("[tangle] Applying TimeMachine state from peer");
 
-                            const round_trip_time = peer.round_trip_time;
-                            console.log("[tangle] Approximate round trip offset: ", round_trip_time / 2);
-                            this._time_machine.decode_and_apply(new MessageWriterReader(message_data));
+                                const round_trip_time = peer.round_trip_time;
+                                console.log("[tangle] Approximate round trip offset: ", round_trip_time / 2);
+                                this._time_machine.decode_and_apply(new MessageWriterReader(message_data));
 
-                            // Apply any messages that were received as we were waiting for this to load.
-                            for (const m of this._buffered_messages) {
-                                await this._time_machine.call_with_time_stamp(m.function_export_index, m.args, m.time_stamp,);
+                                // Apply any messages that were received as we were waiting for this to load.
+                                for (const m of this._buffered_messages) {
+                                    await this._time_machine.call_with_time_stamp(m.function_export_index, m.args, m.time_stamp,);
+                                }
+                                this._buffered_messages = [];
+
+                                // Progress the target time to approximately catch up to the remote peer.
+                                this._time_machine.progress_time(round_trip_time / 2);
+
+                                this._change_state(TangleState.Connected);
                             }
-                            this._buffered_messages = [];
-
-                            // Progress the target time to approximately catch up to the remote peer.
-                            this._time_machine.progress_time(round_trip_time / 2);
-
-                            this._change_state(TangleState.Connected);
                             break;
                         }
                         case (MessageType.Ping): {
