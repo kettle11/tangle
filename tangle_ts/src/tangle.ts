@@ -56,7 +56,7 @@ export class Tangle {
 
     // private _debug_enabled = true;
 
-    static async setup(wasm_binary: Ucint8Array, wasm_imports: WebAssembly.Imports, tangle_configuration?: TangleConfiguration): Promise<Tangle> {
+    static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, tangle_configuration?: TangleConfiguration): Promise<Tangle> {
         tangle_configuration ??= {};
         tangle_configuration.accept_new_programs ??= false;
         tangle_configuration.fixed_update_interval ??= 0;
@@ -94,27 +94,29 @@ export class Tangle {
                     this._room.send_message(this._encode_bounce_back_message(), peer_id);
                 });
             },
-            on_peer_left: (peer_id: PeerId, time: number) => {
+            on_peer_left: (peer_id: PeerId) => {
                 this._run_inner_function(async () => {
                     this._peer_data.delete(peer_id);
 
-                    // TODO: This is not a good way to synchronize when a peer disconnects.
-                    // It will likely work in some cases but it could also easily desync.
+                    // TODO: This is a terrible way to handle peer disconnects.
+                    // It has many potential unhandled edge-cases, but will work most of the time for now.
 
-                    /*
-                    time = ((this._time_machine.current_time + 1000) % 500) + this._offline_tangle.current_time;
-                    if (time < this.earliest_safe_memory_time()) {
-                        console.error("ERROR: POTENTIAL DESYNC DUE TO PEER LEAVING!");
+                    // Only one peer in the room will issue a `peer_left` event.
+                    let closest_peer = this._room.my_id;
+                    let peer_distance = this._room.my_id - peer_id;
+
+                    for (const peer of this._peer_data.keys()) {
+                        const diff = peer - peer_id;
+                        if (diff != 0 && diff < peer_distance) {
+                            closest_peer = peer;
+                            peer_distance = diff;
+                        }
                     }
 
-                    const time_stamp = {
-                        time,
-                        player_id: 0 // 0 is for events sent by the server.
-                    };
-
                     console.log("[tangle] calling 'peer_left'");
-                    this._offline_tangle.call_with_time_stamp(time_stamp, "peer_left", [peer_id]);
-                    */
+                    if (closest_peer == this._room.my_id) {
+                        this.call("peer_left", peer_id);
+                    }
                 });
             },
             on_state_change: (state: RoomState) => {
@@ -492,7 +494,8 @@ export class Tangle {
                 }
             }
 
-            this._time_machine.remove_history_before(earliest_safe_memory);
+            // TODO: The -50 here is masking some sort of bug where a crash occurs because there's no available snapshot.
+            this._time_machine.remove_history_before(earliest_safe_memory - 50);
         }
 
         this._last_performance_now = performance_now;
