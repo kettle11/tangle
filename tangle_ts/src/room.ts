@@ -56,11 +56,12 @@ export class Room {
     private _configuration: RoomConfiguration = {};
     private _outgoing_data_chunk = new Uint8Array(MAX_MESSAGE_SIZE + 5);
     private _rust_utilities: RustUtilities;
+    private _server_socket?: WebSocket;
 
     my_id = 0;
 
     // Used for testing
-    private _artificial_delay = 1000;
+    private _artificial_delay = 0;
 
     constructor(rust_utilities: RustUtilities) {
         this._rust_utilities = rust_utilities;
@@ -403,6 +404,10 @@ export class Room {
             this._peers.delete(peer_id);
             this._configuration.on_peer_left?.(peer_id, time);
         }
+    }
+
+    disconnect() {
+        this._server_socket?.close();
     }
 }
 

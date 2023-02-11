@@ -195,7 +195,6 @@ export class TimeMachine {
 
 
         if (time_stamp_compare(time_stamp, this._current_simulation_time) == -1) {
-            console.log("ROLLBACK NEEDED!");
             // This will cause a rollback next time `simulate_forward` is called.
             this._need_to_rollback_to_time = time_stamp;
         }
@@ -233,6 +232,12 @@ export class TimeMachine {
 
     target_time(): number {
         return this._target_time;
+    }
+
+    // This is used in scenarios where a peer falls too far behind in a simulation. 
+    // This lets them have normal visuals until they resync.
+    set_target_time(time: number) {
+        this._target_time = time;
     }
 
     current_simulation_time(): number {

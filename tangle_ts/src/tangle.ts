@@ -56,7 +56,7 @@ export class Tangle {
 
     // private _debug_enabled = true;
 
-    static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, tangle_configuration?: TangleConfiguration): Promise<Tangle> {
+    static async setup(wasm_binary: Ucint8Array, wasm_imports: WebAssembly.Imports, tangle_configuration?: TangleConfiguration): Promise<Tangle> {
         tangle_configuration ??= {};
         tangle_configuration.accept_new_programs ??= false;
         tangle_configuration.fixed_update_interval ??= 0;
@@ -150,7 +150,7 @@ export class Tangle {
                 if (message_type == MessageType.WasmCall) {
                     const message_data = message.subarray(1);
                     const m = this._decode_wasm_call_message(message_data);
-                    console.log("INCOMING WASM CALL HERE: ", this._time_machine.get_function_name(m.function_index));
+                    // console.log("INCOMING WASM CALL HERE: ", this._time_machine.get_function_name(m.function_index));
                 }
 
                 this._run_inner_function(async () => {
@@ -194,34 +194,9 @@ export class Tangle {
                             break;
                         }
                         case (MessageType.RequestState): {
-                            if (this._configuration?.accept_new_programs) {
-                                // Also send the program binary.
-                                const program_message = this._encode_new_program_message(this._current_program_binary);
-                                this._room.send_message(program_message);
-                            }
-
+                            // TODO: Check that this is a fully loaded peer.
                             const heap_message = this._time_machine.encode(MessageType.SetHeap);
                             this._room.send_message(heap_message);
-                            break;
-                        }
-                        case (MessageType.SetProgram): {
-                            if (!this._configuration?.accept_new_programs) {
-                                console.log("[tangle] Rejecting call to change programs");
-                                return;
-                            }
-
-                            console.error("TODO: Set program");
-                            /*
-                            console.log("[tangle] Changing programs");
-
-                            // TODO: This is incorrect. Make sure all peers are aware of their roundtrip average with each-other
-                            const round_trip_time = peer.round_trip_time;
-                            console.log("[tangle] Round trip offset: ", round_trip_time / 2);
-
-                            const new_program = this._decode_new_program_message(message_data);
-                            this._current_program_binary = new_program;
-                            await this._time_machine.reset_with_new_program(new_program, (round_trip_time / 2));
-                            */
                             break;
                         }
                         case (MessageType.SetHeap): {
@@ -283,6 +258,7 @@ export class Tangle {
         // Ask an arbitrary peer for the heap
         const lowest_latency_peer = this._room.get_lowest_latency_peer();
         if (lowest_latency_peer) {
+            this._change_state(TangleState.RequestingHeap);
             this._room.send_message(this._encode_bounce_back_message(), lowest_latency_peer);
             this._room.send_message(this._encode_request_heap_message(), lowest_latency_peer);
         }
@@ -385,23 +361,6 @@ export class Tangle {
         return reader.read_f64();
     }
 
-    set_program(new_program: Uint8Array) {
-        // TODO!
-        /*
-        this._run_inner_function(async () => {
-            if (!arrayEquals(new_program, this._current_program_binary)) {
-                await this._offline_tangle.reset_with_new_program(
-                    new_program,
-                    0
-                );
-                this._current_program_binary = new_program;
-
-                this._room.send_message(this._encode_new_program_message(new_program));
-            }
-        });
-        */
-    }
-
     private _process_args(args: Array<number | UserIdType>): Array<number> {
         return args.map((a) => {
             if (typeof a != "number") {
@@ -421,7 +380,6 @@ export class Tangle {
             // As-is this design makes it trivial for peers to spoof each-other.
             const args_processed = this._process_args(args);
 
-            console.log("MESSAGE TIME OFFSET: ", this._message_time_offset);
             const time_stamp = {
                 time: this._time_machine.target_time() + this._message_time_offset,
                 player_id: this._room.my_id
@@ -483,17 +441,15 @@ export class Tangle {
         if (this._last_performance_now) {
             this._message_time_offset = 0;
 
-            const time_progressed = performance_now - this._last_performance_now;
+            let time_progressed = performance_now - this._last_performance_now;
 
-            // TODO: Detect if we've fallen too far behind.
-            // Detect if we've fallen behind and need to resynchronize with the room.
-            // This likely occurs in scenarios where connections are a atrocious (in which case this might not be the right check)
-            // or when a tab is suspended for a bit.
-            /*
-            if (((this._offline_tangle.recurring_call_time + time_progressed) - this._offline_tangle.recurring_call_time) > 2000) {
+            // If the client is over 2 seconds behind assume they need to be resynced.
+            const time_diff = (this._time_machine.target_time() + time_progressed) - this._time_machine.current_simulation_time();
+            if (this._time_machine._fixed_update_interval !== undefined && time_diff > 2000) {
+
                 // TODO: This time change means that this peer cannot be trusted as an authority on the room simulation.
                 // The peer should stop sending events and should absolutely not synchronize state with other peers.
-                this._offline_tangle.recurring_call_time = this._offline_tangle.recurring_call_time + time_progressed;
+                time_progressed = this._time_machine._fixed_update_interval;
 
                 if (this._peer_data.size > 0) {
                     console.log("[tangle] Fallen over 2 seconds behind, attempting to resync with room");
@@ -502,7 +458,6 @@ export class Tangle {
                     console.log("[tangle] Fallen over 2 seconds behind but this is a single-player session, so ignoring this");
                 }
             }
-            */
 
             await this._time_machine.progress_time(time_progressed);
 
@@ -550,8 +505,8 @@ export class Tangle {
         return this._time_machine.read_string(address, length);
     }
 
-    print_history() {
-        this._time_machine.print_history();
+    disconnect() {
+        this._room.disconnect();
     }
 }
 
