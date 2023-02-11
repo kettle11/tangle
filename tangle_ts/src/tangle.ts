@@ -413,7 +413,7 @@ export class Tangle {
         });
     }
 
-    call(function_name: string, args: Array<number | UserIdType>) {
+    call(function_name: string, ...args: Array<number | UserIdType>) {
         this._run_inner_function(async () => {
 
             // TODO: Only process the args like this for local calls.
@@ -454,7 +454,7 @@ export class Tangle {
     }
 
     /// This call will have no impact but can be useful to draw or query from the world.
-    call_and_revert(function_name: string, args: Array<number>) {
+    call_and_revert(function_name: string, ...args: Array<number>) {
         this._run_inner_function(async () => {
             const args_processed = this._process_args(args);
             const function_index = this._time_machine.get_function_export_index(function_name);
@@ -537,9 +537,7 @@ export class Tangle {
                 }
             }
 
-            // DEBUG: This -100 is for debugging purposes only
             this._time_machine.remove_history_before(earliest_safe_memory);
-
         }
 
         this._last_performance_now = performance_now;
