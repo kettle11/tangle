@@ -43,13 +43,11 @@ const decoder = new TextDecoder();
 export class TimeMachine {
     _fixed_update_interval?: number;
 
-    // The earliest recordered time that it's safe to rollback to.
-    private _earliest_safe_time = 0;
+    private _current_simulation_time: TimeStamp = { time: 0, player_id: 0 };
     private _fixed_update_time = 0;
     private _target_time = 0;
 
-    private _next_run_event_index = 0;
-    private _need_to_rollback_to_index?: number;
+    private _need_to_rollback_to_time?: TimeStamp;
 
     private _events: Array<Event> = [];
     private _snapshots: Array<WasmSnapshot> = [];
@@ -136,9 +134,13 @@ export class TimeMachine {
         }
 
         // If there's no "fixed_update" function change behavior to account for that.
-        if (!time_machine._fixed_update_index) {
+        if (time_machine._fixed_update_index === undefined) {
             time_machine._fixed_update_interval = undefined;
         }
+
+        // This ensures the first message is slightly into the future.
+
+        time_machine._snapshots = [time_machine._get_wasm_snapshot()];
 
         return time_machine;
     }
@@ -163,6 +165,12 @@ export class TimeMachine {
 
     /// Returns the function call of this instance.
     async call_with_time_stamp(function_export_index: number, args: Array<number>, time_stamp: TimeStamp, record_hash = false) {
+        if (time_stamp_compare(time_stamp, this._snapshots[0].time_stamp) == -1) {
+            // TODO: This is an error. It's no longer possible to add events in the past.
+            // Report a desync here.
+            console.error("[tangle error] Attempting to rollback to before earliest safe time");
+        }
+
         // To avoid excessive reordering insert recurring function calls that
         // will occur before this function call.
         this._progress_recurring_function_calls(time_stamp.time);
@@ -185,16 +193,11 @@ export class TimeMachine {
             }
         }
 
-        if (time_stamp.time < this._earliest_safe_time) {
-            // TODO: This is an error. It's no longer possible to add events in the past.
-            // Report a desync here.
-            console.error("[tangle error] Attempting to rollback to before earliest safe time");
-        }
 
-        if ((i + 1) < this._next_run_event_index) {
+        if (time_stamp_compare(time_stamp, this._current_simulation_time) == -1) {
             console.log("ROLLBACK NEEDED!");
             // This will cause a rollback next time `simulate_forward` is called.
-            this._need_to_rollback_to_index = i;
+            this._need_to_rollback_to_time = time_stamp;
         }
 
         // Insert after the found insertion point.
@@ -204,14 +207,6 @@ export class TimeMachine {
             time_stamp,
             record_hash
         });
-
-        if (this._events[i] && !(time_stamp_compare(this._events[i].time_stamp, this._events[i + 1].time_stamp) == -1)) {
-            console.error("TIME STAMP OUT OF ORDER AFTER SPLICE0!");
-        }
-
-        if (this._events[i + 2] && !(time_stamp_compare(this._events[i + 1].time_stamp, this._events[i + 2].time_stamp) == -1)) {
-            console.error("TIME STAMP OUT OF ORDER AFTER SPLICE1!");
-        }
     }
 
     /// Call a function but ensure its results do not persist and cannot cause a desync.
@@ -227,9 +222,9 @@ export class TimeMachine {
     }
 
     private _progress_recurring_function_calls(target_time: number) {
-        if (this._fixed_update_interval && this._fixed_update_index) {
+        if (this._fixed_update_interval !== undefined && this._fixed_update_index !== undefined) {
             // Add `fixed_update` calls that go into the future.
-            while ((target_time - this._fixed_update_time) >= this._fixed_update_interval) {
+            while (target_time > this._fixed_update_time) {
                 this.call_with_time_stamp(this._fixed_update_index, [], { time: this._fixed_update_time, player_id: 0 });
                 this._fixed_update_time += this._fixed_update_interval;
             }
@@ -241,11 +236,7 @@ export class TimeMachine {
     }
 
     current_simulation_time(): number {
-        let current_simulation_time = this._earliest_safe_time;
-        if (this._next_run_event_index > 0) {
-            current_simulation_time = this._events[this._next_run_event_index - 1].time_stamp.time;
-        }
-        return current_simulation_time;
+        return this._current_simulation_time.time;
     }
 
     /// This lets the simulation run further into the future.
@@ -259,15 +250,13 @@ export class TimeMachine {
     /// This gives the calling context an opportunity to manage how much CPU-time is consumed.
     /// Call this is in a loop and if it returns true continue. 
     step(): boolean {
-        if (this._need_to_rollback_to_index) {
+        if (this._need_to_rollback_to_time !== undefined) {
             // Perform a rollback here.
-
-            const time_stamp = this._events[this._need_to_rollback_to_index].time_stamp;
 
             // Apply the most recent snapshot.
             let i = this._snapshots.length - 1;
             for (; i >= 0; --i) {
-                if (time_stamp_compare(time_stamp, this._snapshots[i].time_stamp) != -1) {
+                if (time_stamp_compare(this._need_to_rollback_to_time, this._snapshots[i].time_stamp) != -1) {
                     break;
                 }
             }
@@ -278,21 +267,21 @@ export class TimeMachine {
             // Remove future snapshots
             this._snapshots.splice(i, this._snapshots.length - i);
 
-            // Move _next_run_event_index to the event after this snapshot.
-            i = this._need_to_rollback_to_index;
-            for (; i >= 0; --i) {
-                if (time_stamp_compare(this._events[i].time_stamp, snap_shot.time_stamp) != 1) {
-                    i += 1;
-                    break;
-                }
-            }
             // Begin simulation from the event that occurred after the snapshot rolled back to.
-            this._next_run_event_index = i;
-            this._need_to_rollback_to_index = undefined;
+            this._current_simulation_time = snap_shot.time_stamp;
+            this._need_to_rollback_to_time = undefined;
         }
 
-        const function_call = this._events[this._next_run_event_index];
-        if (function_call && function_call.time_stamp.time <= this._target_time) {
+        let i = this._events.length - 1;
+        for (; i >= 0; --i) {
+            if (time_stamp_compare(this._events[i].time_stamp, this._current_simulation_time) != 1) {
+                break;
+            }
+        }
+        i += 1;
+
+        const function_call = this._events[i];
+        if (function_call !== undefined && function_call.time_stamp.time <= this._target_time) {
             const f = this._exports[function_call.function_export_index] as CallableFunction;
             if (function_call.record_hash) {
                 // console.log("HASH BEFORE: ", this.hash_wasm_state());
@@ -301,7 +290,7 @@ export class TimeMachine {
             if (function_call.record_hash) {
                 // console.log("HASH AFTER: ", this.hash_wasm_state());
             }
-            this._next_run_event_index += 1;
+            this._current_simulation_time = function_call.time_stamp;
             return true;
         }
         return false;
@@ -310,26 +299,26 @@ export class TimeMachine {
     // Take a snapshot. This provides a point in time to rollback to.
     // This should be called after significant computation has been performed.
     take_snapshot() {
-        this._snapshots.push(this._get_wasm_snapshot());
+        let i = this._events.length - 1;
+        for (; i >= 0; --i) {
+            const compare = time_stamp_compare(this._events[i].time_stamp, this._current_simulation_time);
+            if (compare == -1) {
+                return;
+            }
+            if (compare == 0) {
+                this._snapshots.push(this._get_wasm_snapshot());
+                // There is no need to store the function anymore after this, so remove it from the events array.
+                return;
+            }
+        }
     }
 
     remove_history_before(time: number) {
-        return;
         // Remove all events and snapshots that occurred before this time.
         // Progress the safe time. 
-        // Decrement _next_run_event_index.
         // Always leave at least one snapshot to rollback to.
 
         let i = 0;
-        for (; i < this._events.length; ++i) {
-            if (this._events[i].time_stamp.time >= time) {
-                break;
-            }
-        }
-        this._events.splice(0, i);
-        this._next_run_event_index -= i;
-
-        i = 0;
         // To ensure there's always atleast one snapshot to rollback to:
         // this._snapshots.length - 1 
         for (; i < this._snapshots.length - 1; ++i) {
@@ -337,8 +326,18 @@ export class TimeMachine {
                 break;
             }
         }
+        i -= 1;
         this._snapshots.splice(0, i);
-        this._earliest_safe_time = time;
+
+        // Remove all events that occurred before the latest snapshot.
+        let j = 0;
+        for (; j < this._events.length; ++j) {
+            if (time_stamp_compare(this._events[j].time_stamp, this._snapshots[0].time_stamp) != -1) {
+                break;
+            }
+        }
+        j -= 1;
+        this._events.splice(0, j);
     }
 
     // `deep` specifies if the memory is deep-copied for this snapshot. 
@@ -350,15 +349,6 @@ export class TimeMachine {
             globals.push([index, (export_values[index] as WebAssembly.Global).value]);
         }
 
-        // TODO: Audit if this default time_stamp makes sense
-        // Are there scenarios where there'd be no function_calls when a snapshot is taken?
-
-        let time_stamp = { time: 0, player_id: 0 };
-        const function_call = this._events[this._next_run_event_index - 1];
-        if (function_call) {
-            time_stamp = function_call.time_stamp;
-        }
-
         let memory = new Uint8Array((this._wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer);
         if (deep) {
             memory = new Uint8Array(memory);
@@ -368,7 +358,7 @@ export class TimeMachine {
             // This nested Uint8Array constructor creates a deep copy.
             memory,
             globals,
-            time_stamp
+            time_stamp: this._current_simulation_time
         };
     }
 
@@ -414,6 +404,7 @@ export class TimeMachine {
 
     encode(first_byte: number): Uint8Array {
         console.log("[time-machine] Encoding with hash: ", this.hash_wasm_state());
+
         // For bandwidth / performance reasons only send encode
         // the earliest safe snapshot and all subsequent events.
         // It's up to the decoding TimeMachine to catchup.
@@ -423,13 +414,12 @@ export class TimeMachine {
         for (const event of this._events) {
             size += event.args.length * 8;
         }
-        size += 2 + (4 + 9) * snapshot.globals.length;
+        size += 8 + 8 + 2 + (4 + 9) * snapshot.globals.length;
         size += 4 + snapshot.memory.buffer.byteLength;
 
         const writer = new MessageWriterReader(new Uint8Array(size));
 
         writer.write_u8(first_byte);
-        // TODO: The corresponding decode
 
         // Encode _earliest_safe_time
         // Encode _fixed_update_time
@@ -438,20 +428,9 @@ export class TimeMachine {
         // Encode _events
         // Encode _snapshot
 
-        writer.write_f64(this._earliest_safe_time);
         writer.write_f64(this._fixed_update_time);
         writer.write_f64(this._target_time);
-
-
-        // This finds the _next_run_event_index to send the peer.
-        // This is very similar to a rollback but it occurs for the new joining peer.
-        let i = 0;
-        for (; i <= this._events.length; i++) {
-            if (time_stamp_compare(this._events[i].time_stamp, snapshot.time_stamp) != -1) {
-                break;
-            }
-        }
-        writer.write_f64(i);
+        writer.write_time_stamp(snapshot.time_stamp);
 
         // Encode events
         writer.write_u32(this._events.length);
@@ -465,15 +444,7 @@ export class TimeMachine {
         }
 
         // Encode the snapshot
-
-        // Encode all mutable globals
-        writer.write_u16(snapshot.globals.length);
-        for (const value of snapshot.globals) {
-            writer.write_u32(value[0]);
-            writer.write_tagged_number(value[1] as number | bigint);
-        }
-        writer.write_u32(snapshot.memory.buffer.byteLength);
-        writer.write_raw_bytes(new Uint8Array(snapshot.memory.buffer));
+        writer.write_wasm_snapshot(snapshot);
 
         // Debugging
         console.log("[time-machine] Hash of sent snapshot: ", this.rust_utilities.hash_snapshot(snapshot));
@@ -482,10 +453,9 @@ export class TimeMachine {
     }
 
     decode_and_apply(reader: MessageWriterReader) {
-        this._earliest_safe_time = reader.read_f64();
         this._fixed_update_time = reader.read_f64();
         this._target_time = reader.read_f64();
-        this._next_run_event_index = reader.read_f64();
+        this._current_simulation_time = reader.read_time_stamp();
 
         const events_length = reader.read_u32();
         this._events = new Array(events_length);
@@ -516,16 +486,23 @@ export class TimeMachine {
 
         const wasm_snapshot = reader.read_wasm_snapshot();
 
-        // TODO: This is obviously not the real TimeStamp.
         // Evaluate if WasmSnapshot really needs to have a TimeStamp.
-        wasm_snapshot.time_stamp = { time: 0, player_id: 0 };
         this._apply_snapshot(wasm_snapshot);
+        this._snapshots = [wasm_snapshot];
 
         console.log("[time-machine] Decoded with hash: ", this.hash_wasm_state());
     }
 
     hash_wasm_state(): Uint8Array {
         return this.rust_utilities.hash_snapshot(this._get_wasm_snapshot(false));
+    }
+
+    print_history() {
+        let history = "";
+        for (const event of this._events) {
+            history += `${event.time_stamp.time} ${event.time_stamp.player_id} ${event.function_export_index}\n`
+        }
+        console.log(history);
     }
 
 }

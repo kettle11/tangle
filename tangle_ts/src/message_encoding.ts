@@ -137,8 +137,9 @@ export class MessageWriterReader {
     }
 
     write_wasm_snapshot(snapshot: WasmSnapshot): void {
-        const globals_count = snapshot.globals.length;
+        this.write_time_stamp(snapshot.time_stamp);
 
+        const globals_count = snapshot.globals.length;
         // Encode all mutable globals
         this.write_u16(globals_count);
         for (const value of snapshot.globals) {
@@ -150,6 +151,7 @@ export class MessageWriterReader {
     }
 
     read_wasm_snapshot(): WasmSnapshot {
+        const time_stamp = this.read_time_stamp();
         const mutable_globals_length = this.read_u16();
 
         const globals: Array<[number, unknown]> = [];
@@ -165,9 +167,7 @@ export class MessageWriterReader {
         return {
             memory,
             globals,
-            // TODO: This is obviously not the real TimeStamp.
-            // Evaluate if WasmSnapshot really needs to have a TimeStamp.
-            time_stamp: { time: 0, player_id: 0 }
+            time_stamp,
         };
     }
 

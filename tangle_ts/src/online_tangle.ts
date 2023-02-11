@@ -421,6 +421,7 @@ export class Tangle {
             // As-is this design makes it trivial for peers to spoof each-other.
             const args_processed = this._process_args(args);
 
+            console.log("MESSAGE TIME OFFSET: ", this._message_time_offset);
             const time_stamp = {
                 time: this._time_machine.target_time() + this._message_time_offset,
                 player_id: this._room.my_id
@@ -508,7 +509,6 @@ export class Tangle {
             const time_budget = time_progressed * 0.7;
             const time_here = performance.now();
 
-            this._time_machine.take_snapshot();
             while (this._time_machine.step()) {
                 // TODO: A better heuristic for when snapshots should be taken.
                 // They could be taken after a set amount of computational overhead.
@@ -550,6 +550,10 @@ export class Tangle {
     }
     read_string(address: number, length: number): string {
         return this._time_machine.read_string(address, length);
+    }
+
+    print_history() {
+        this._time_machine.print_history();
     }
 }
 
