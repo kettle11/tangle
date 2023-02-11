@@ -538,7 +538,7 @@ export class Tangle {
             }
 
             // DEBUG: This -100 is for debugging purposes only
-            this._time_machine.remove_history_before(earliest_safe_memory - 100);
+            this._time_machine.remove_history_before(earliest_safe_memory);
 
         }
 

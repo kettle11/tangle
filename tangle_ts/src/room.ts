@@ -60,7 +60,7 @@ export class Room {
     my_id = 0;
 
     // Used for testing
-    private _artificial_delay = 0;
+    private _artificial_delay = 1000;
 
     constructor(rust_utilities: RustUtilities) {
         this._rust_utilities = rust_utilities;
