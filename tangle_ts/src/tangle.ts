@@ -67,7 +67,6 @@ export class Tangle {
     static async instanstiate(source: ArrayBuffer, importObject?: WebAssembly.Imports | undefined, tangle_configuration?: TangleConfiguration): Promise<InstantiatedTangle> {
         tangle_configuration ??= {};
         tangle_configuration.accept_new_programs ??= false;
-        tangle_configuration.fixed_update_interval ??= 0;
 
         const wasm_binary = new Uint8Array(source);
 

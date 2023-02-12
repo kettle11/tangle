@@ -191,8 +191,7 @@ export class TimeMachine {
                     // TODO: This is an error! There should not be duplicate time-stamped events.
                     // Report a desync here.
                     console.error("[tangle error] Attempted to call a function with a duplicate time stamp.");
-
-                    break;
+                    return;
             }
         }
 
