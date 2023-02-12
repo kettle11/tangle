@@ -289,9 +289,13 @@ export class Tangle {
         for (const key of Object.keys(this._time_machine._wasm_instance.instance.exports)) {
             const e = this._time_machine._wasm_instance.instance.exports[key];
             if (typeof e === 'function') {
-                export_object[key] = (...args: any) => {
+                const wrapped_function = (...args: any) => {
                     this.call(key, ...args);
                 };
+                wrapped_function.callAndRevert = (...args: any) => {
+                    this.call_and_revert(key, ...args);
+                };
+                export_object[key] = wrapped_function;
             }
         }
         return export_object;
@@ -451,13 +455,13 @@ export class Tangle {
             }
         });
 
-        if (!(this._time_machine._fixed_update_interval)) {
-            this.progress_time();
-        }
+        this.progress_time();
     }
 
     /// This call will have no impact but can be useful to draw or query from the world.
     call_and_revert(function_name: string, ...args: Array<number>) {
+        this.progress_time();
+
         this._run_inner_function(async () => {
             const args_processed = this._process_args(args);
             const function_index = this._time_machine.get_function_export_index(function_name);
