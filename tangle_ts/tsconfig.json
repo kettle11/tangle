@@ -4,7 +4,8 @@
     "allowJs": true,
     "target": "ES2020",
     "strict": true,
-    "declaration": true
+    "declaration": true,
+    "module": "ES2020"
   },
   "include": [
     "./src/**/*"

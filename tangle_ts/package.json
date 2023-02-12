@@ -2,14 +2,14 @@
   "name": "tangle-sync",
   "version": "0.1.1",
   "description": "",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/tangle.js",
+  "types": "dist/tangle.d.ts",
   "files": [
     "dist/*"
   ],
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap",
-    "build_release": "esbuild --mangle-props=^_ src/index.ts --bundle --outfile=dist/index.js --minify --format=esm"
+    "build": "esbuild src/index.ts --bundle --outfile=dist/tangle.js --format=esm --sourcemap",
+    "build_release": "esbuild --mangle-props=^_ src/index.ts --bundle --outfile=dist/tangle.js --minify --format=esm"
   },
   "keywords": [],
   "author": "",

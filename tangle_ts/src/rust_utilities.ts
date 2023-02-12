@@ -28,7 +28,12 @@ export class RustUtilities {
                 },
             }
         };
-        const rust_utilities = await WebAssembly.instantiateStreaming(fetch("rust_utilities.wasm"), imports);
+        console.log(import.meta);
+
+        const url = new URL(import.meta.url);
+        const url_without_file = url.origin + url.pathname.substring(0, url.pathname.lastIndexOf("/") + 1);
+        const final_url = new URL("rust_utilities.wasm", url_without_file);
+        const rust_utilities = await WebAssembly.instantiateStreaming(fetch(final_url), imports);
         return new RustUtilities(rust_utilities);
     }
 
