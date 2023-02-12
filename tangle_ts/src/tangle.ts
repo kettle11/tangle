@@ -72,6 +72,24 @@ export class Tangle {
         const wasm_binary = new Uint8Array(source);
 
         importObject ??= {};
+
+        // Wrap all imports so that they can't return a value, which would cause desyncs.
+        // This may need more thought in the future because it's a big limitation.
+        if (importObject) {
+            Object.values(importObject).forEach((moduleImports) => {
+                Object.entries(moduleImports).forEach(([importName, importValue]) => {
+                    if (typeof importValue === 'function') {
+                        moduleImports[importName] = function (...args: any) {
+                            const r = importValue(...args);
+                            if (r !== undefined) {
+                                console.log("[tangle warning] Tangle prevents WebAssembly imports from returning values because those values are unique per-peer and would cause a desync.")
+                            }
+                        };
+                    }
+                });
+            });
+        }
+
         const time_machine = await TimeMachine.setup(wasm_binary, importObject, tangle_configuration.fixed_update_interval);
 
         const tangle = new Tangle(time_machine);
