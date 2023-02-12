@@ -3,6 +3,7 @@ import { RustUtilities } from "./rust_utilities";
 export interface RoomConfiguration {
     server_url?: string,
     room_name?: string,
+    ice_servers?: RTCIceServer[],
     on_state_change?: (room_state: RoomState) => void;
     on_peer_joined?: (peer_id: PeerId) => void;
     on_peer_left?: (peer_id: PeerId, time: number) => void;
@@ -145,6 +146,32 @@ export class Room {
         this._configuration.server_url ??= "tangle-server.fly.dev";
         this._configuration.room_name ??= "";
 
+        // TODO: Do not use metered's Turn servers
+        // Investigate routing traffic through Tangle's matchmaking server or other Tangle servers.
+        this._configuration.ice_servers ??= [
+            {
+                urls: "stun:relay.metered.ca:80",
+            },
+            {
+                urls: "stun:stun1.l.google.com:19302"
+            },
+            {
+                urls: "turn:relay.metered.ca:80",
+                username: "acb3fd59dc274dbfd4e9ef21",
+                credential: "1zeDaNt7C85INfxl",
+            },
+            {
+                urls: "turn:relay.metered.ca:443",
+                username: "acb3fd59dc274dbfd4e9ef21",
+                credential: "1zeDaNt7C85INfxl",
+            },
+            {
+                urls: "turn:relay.metered.ca:443?transport=tcp",
+                username: "acb3fd59dc274dbfd4e9ef21",
+                credential: "1zeDaNt7C85INfxl",
+            },
+        ];
+
         const connect_to_server = () => {
             const server_socket = new WebSocket("wss://" + this._configuration.server_url);
 
@@ -277,40 +304,7 @@ export class Room {
     }
 
     private make_rtc_peer_connection(peer_ip: string, peer_id: PeerId, server_socket: WebSocket): RTCPeerConnection {
-
-        /*
-        const ice_servers = [
-            { urls: "stun:stun1.l.google.com:19302" },
-        ];
-        */
-        // TODO: Do not use metered's Turn servers
-        // Investigate routing traffic through Tangle's matchmaking server or other Tangle servers.
-        // TODO: Expose this as a configurable option.
-        const ice_servers = [
-            {
-                urls: "stun:relay.metered.ca:80",
-            },
-            {
-                urls: "stun:stun1.l.google.com:19302"
-            },
-            {
-                urls: "turn:relay.metered.ca:80",
-                username: "acb3fd59dc274dbfd4e9ef21",
-                credential: "1zeDaNt7C85INfxl",
-            },
-            {
-                urls: "turn:relay.metered.ca:443",
-                username: "acb3fd59dc274dbfd4e9ef21",
-                credential: "1zeDaNt7C85INfxl",
-            },
-            {
-                urls: "turn:relay.metered.ca:443?transport=tcp",
-                username: "acb3fd59dc274dbfd4e9ef21",
-                credential: "1zeDaNt7C85INfxl",
-            },
-        ];
-
-        const peer_connection = new RTCPeerConnection({ 'iceServers': ice_servers });
+        const peer_connection = new RTCPeerConnection({ 'iceServers': this._configuration.ice_servers });
 
         // TODO: If this is swapped to a more unreliable UDP-like protocol then ordered and maxRetransmits should be set to false and 0.
         //

@@ -32,6 +32,7 @@ type TangleConfiguration = {
     fixed_update_interval?: number;
     accept_new_programs?: boolean,
     room_name?: string,
+    ice_servers?: RTCIceServer[],
     on_state_change_callback?: (state: TangleState, tangle: Tangle) => void
 }
 
@@ -132,6 +133,7 @@ export class Tangle {
         room_name += hash.join("");
 
         const room_configuration = {
+            ice_servers: this._configuration.ice_servers,
             room_name,
             on_peer_joined: (peer_id: PeerId) => {
                 this._run_inner_function(async () => {
