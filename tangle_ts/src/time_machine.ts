@@ -52,7 +52,7 @@ export class TimeMachine {
     private _events: Array<Event> = [];
     private _snapshots: Array<WasmSnapshot> = [];
 
-    private _wasm_instance: WebAssembly.WebAssemblyInstantiatedSource;
+    _wasm_instance: WebAssembly.WebAssemblyInstantiatedSource;
     private _imports: WebAssembly.Imports = {};
 
     private _global_indices: Array<number> = [];

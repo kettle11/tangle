@@ -35,6 +35,13 @@ type TangleConfiguration = {
     on_state_change_callback?: (state: TangleState, tangle: Tangle) => void
 }
 
+type InstantiatedTangle = {
+    instance: {
+        exports: Record<string, any>,
+    },
+    tangle: Tangle
+}
+
 class UserIdType { }
 export const UserId = new UserIdType();
 
@@ -57,17 +64,31 @@ export class Tangle {
 
     // private _debug_enabled = true;
 
-    static async setup(wasm_binary: Uint8Array, wasm_imports: WebAssembly.Imports, tangle_configuration?: TangleConfiguration): Promise<Tangle> {
+    static async instanstiate(source: ArrayBuffer, importObject?: WebAssembly.Imports | undefined, tangle_configuration?: TangleConfiguration): Promise<InstantiatedTangle> {
         tangle_configuration ??= {};
         tangle_configuration.accept_new_programs ??= false;
         tangle_configuration.fixed_update_interval ??= 0;
 
-        const time_machine = await TimeMachine.setup(wasm_binary, wasm_imports, tangle_configuration.fixed_update_interval);
+        const wasm_binary = new Uint8Array(source);
+
+        importObject ??= {};
+        const time_machine = await TimeMachine.setup(wasm_binary, importObject, tangle_configuration.fixed_update_interval);
 
         const tangle = new Tangle(time_machine);
         tangle._configuration = tangle_configuration;
-        await tangle.setup_inner(tangle_configuration.room_name, wasm_binary);
-        return tangle;
+        const exports = await tangle.setup_inner(tangle_configuration.room_name, wasm_binary);
+        return {
+            instance: {
+                exports
+            },
+            tangle: tangle
+        };
+    }
+
+    static async instantiateStreaming(source: Response | PromiseLike<Response>, importObject?: WebAssembly.Imports | undefined, tangle_configuration?: TangleConfiguration): Promise<InstantiatedTangle> {
+        source = await source;
+        const binary = await source.arrayBuffer();
+        return Tangle.instanstiate(new Uint8Array(binary), importObject, tangle_configuration);
     }
 
     constructor(time_machine: TimeMachine) {
@@ -77,7 +98,7 @@ export class Tangle {
 
     private _change_state(state: TangleState) {
         if (this._tangle_state != state) {
-            if (this._tangle_state == TangleState.Connected) {
+            if (state == TangleState.Connected) {
                 this._last_performance_now = performance.now();
             }
             this._tangle_state = state;
@@ -86,7 +107,7 @@ export class Tangle {
         this._tangle_state = state
     }
 
-    private async setup_inner(room_name: string | undefined, wasm_binary: Uint8Array) {
+    private async setup_inner(room_name: string | undefined, wasm_binary: Uint8Array): Promise<Record<string, any>> {
         room_name ??= document.location.href;
 
         // Append a hash of the binary so that peers won't join rooms without matching binaries.
@@ -246,6 +267,17 @@ export class Tangle {
 
         this._room = await Room.setup(room_configuration, this._rust_utilities);
         this._current_program_binary = wasm_binary;
+
+        const export_object: Record<string, any> = {};
+        for (const key of Object.keys(this._time_machine._wasm_instance.instance.exports)) {
+            const e = this._time_machine._wasm_instance.instance.exports[key];
+            if (typeof e === 'function') {
+                export_object[key] = (...args: any) => {
+                    this.call(key, ...args);
+                };
+            }
+        }
+        return export_object;
     }
 
     private async _run_inner_function(f: () => void, enqueue_condition = false) {
