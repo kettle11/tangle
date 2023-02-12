@@ -1,7 +1,8 @@
 import { RustUtilities } from "./rust_utilities";
 
 export interface RoomConfiguration {
-    server_url?: string
+    server_url?: string,
+    room_name?: string,
     on_state_change?: (room_state: RoomState) => void;
     on_peer_joined?: (peer_id: PeerId) => void;
     on_peer_left?: (peer_id: PeerId, time: number) => void;
@@ -142,8 +143,7 @@ export class Room {
     private async _setup_inner(room_configuration: RoomConfiguration) {
         this._configuration = room_configuration;
         this._configuration.server_url ??= "tangle-server.fly.dev";
-
-        const room_name = document.location.href;
+        this._configuration.room_name ??= "";
 
         const connect_to_server = () => {
             const server_socket = new WebSocket("wss://" + this._configuration.server_url);
@@ -152,8 +152,8 @@ export class Room {
 
             server_socket.onopen = () => {
                 console.log("[room] Connection established with server");
-                console.log("[room] Requesting to join room: ", room_name);
-                server_socket.send(JSON.stringify({ 'join_room': room_name }));
+                console.log("[room] Requesting to join room: ", this._configuration.room_name);
+                server_socket.send(JSON.stringify({ 'join_room': this._configuration.room_name }));
 
                 // Poke the server every 10 seconds to ensure it doesn't drop our connection.
                 // Without this it seems browsers don't send WebSocket native 'pings' as expected.
@@ -212,13 +212,14 @@ export class Room {
                 const peer_id = compute_id_from_ip(peer_ip);
 
                 if (message.room_name) {
+                    /*
                     const url = new URL(message.room_name);
                     const location = document.location;
-
                     if (url.href != location.href) {
                         console.error("[room] Tried to join a room that doesn't match current host URL");
                         return;
                     }
+                    */
 
                     // Received when joining a room for the first time.
                     console.log("[room] Entering room: ", message.room_name);

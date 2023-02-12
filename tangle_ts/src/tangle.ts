@@ -30,8 +30,9 @@ export enum TangleState {
 
 type TangleConfiguration = {
     fixed_update_interval?: number;
-    on_state_change_callback?: (state: TangleState, tangle: Tangle) => void
     accept_new_programs?: boolean,
+    room_name?: string,
+    on_state_change_callback?: (state: TangleState, tangle: Tangle) => void
 }
 
 class UserIdType { }
@@ -65,7 +66,7 @@ export class Tangle {
 
         const tangle = new Tangle(time_machine);
         tangle._configuration = tangle_configuration;
-        await tangle.setup_inner(time_machine, wasm_binary);
+        await tangle.setup_inner(tangle_configuration.room_name, wasm_binary);
         return tangle;
     }
 
@@ -82,8 +83,15 @@ export class Tangle {
         this._tangle_state = state;
     }
 
-    private async setup_inner(time_machine: TimeMachine, wasm_binary: Uint8Array) {
+    private async setup_inner(room_name: string | undefined, wasm_binary: Uint8Array) {
+        room_name ??= document.location.href;
+
+        // Append a hash of the binary so that peers won't join rooms without matching binaries.
+        const hash = this._rust_utilities.hash_data(wasm_binary);
+        room_name += hash.join("");
+
         const room_configuration = {
+            room_name,
             on_peer_joined: (peer_id: PeerId) => {
                 this._run_inner_function(async () => {
                     this._peer_data.set(peer_id, {
