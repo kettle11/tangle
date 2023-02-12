@@ -77,10 +77,13 @@ export class Tangle {
 
     private _change_state(state: TangleState) {
         if (this._tangle_state != state) {
+            if (this._tangle_state == TangleState.Connected) {
+                this._last_performance_now = performance.now();
+            }
             this._tangle_state = state;
             this._configuration.on_state_change_callback?.(state, this);
         }
-        this._tangle_state = state;
+        this._tangle_state = state
     }
 
     private async setup_inner(room_name: string | undefined, wasm_binary: Uint8Array) {
@@ -156,19 +159,12 @@ export class Tangle {
             on_message: async (peer_id: PeerId, message: Uint8Array) => {
                 const peer_connected_already = this._peer_data.get(peer_id);
 
-                const message_type = message[0];
-                if (message_type == MessageType.WasmCall) {
-                    const message_data = message.subarray(1);
-                    const m = this._decode_wasm_call_message(message_data);
-                    // console.log("INCOMING WASM CALL HERE: ", this._time_machine.get_function_name(m.function_index));
-                }
-
                 this._run_inner_function(async () => {
                     // Ignore messages from peers that have disconnected. 
                     // TODO: Evaluate if this could cause desyncs.
                     const peer = this._peer_data.get(peer_id);
                     if (!peer) {
-                        console.log("REJECTED MESSAGE FROM UNCONNECTED PEER: ", peer_id);
+                        console.log("[tangle] Rejected message from unconnected peer: ", peer_id);
                         return;
                     }
 
@@ -199,6 +195,9 @@ export class Tangle {
                             } else {
                                 console.log("Remote Wasm call: ", this._time_machine.get_function_name(m.function_index));
                                 await this._time_machine.call_with_time_stamp(m.function_index, m.args, time_stamp, true);
+                                if (!(this._time_machine._fixed_update_interval)) {
+                                    this.progress_time();
+                                }
                             }
 
                             break;
@@ -272,22 +271,6 @@ export class Tangle {
             this._room.send_message(this._encode_bounce_back_message(), lowest_latency_peer);
             this._room.send_message(this._encode_request_heap_message(), lowest_latency_peer);
         }
-    }
-
-    private _encode_new_program_message(program_data: Uint8Array): Uint8Array {
-        const encoded_data = this._rust_utilities.gzip_encode(program_data);
-
-        const message = new Uint8Array(encoded_data.byteLength + 1);
-        const message_writer = new MessageWriterReader(message);
-        message_writer.write_u8(MessageType.SetProgram);
-        message_writer.write_raw_bytes(encoded_data);
-
-        return message;
-    }
-
-    private _decode_new_program_message(data_in: Uint8Array) {
-        const data = this._rust_utilities.gzip_decode(data_in);
-        return data;
     }
 
     private _encode_wasm_call_message(function_index: number, time: number, args: Array<number> /*, hash?: Uint8Array*/): Uint8Array {
@@ -411,7 +394,6 @@ export class Tangle {
                 await this._time_machine.call_with_time_stamp(function_index, args_processed, time_stamp, true);
 
                 // Network the call
-                console.log("SENDING MESSAGE: ", function_name);
                 this._room.send_message(this._encode_wasm_call_message(function_index, time_stamp.time, args_processed));
 
                 for (const value of this._peer_data.values()) {
@@ -419,6 +401,10 @@ export class Tangle {
                 }
             }
         });
+
+        if (!(this._time_machine._fixed_update_interval)) {
+            this.progress_time();
+        }
     }
 
     /// This call will have no impact but can be useful to draw or query from the world.
@@ -449,8 +435,6 @@ export class Tangle {
         const performance_now = performance.now();
 
         if (this._last_performance_now) {
-            this._message_time_offset = 0;
-
             let time_progressed = performance_now - this._last_performance_now;
 
             // If the client is over 2 seconds behind assume they need to be resynced.
@@ -504,6 +488,10 @@ export class Tangle {
 
             // TODO: The -50 here is masking some sort of bug where a crash occurs because there's no available snapshot.
             this._time_machine.remove_history_before(earliest_safe_memory - 50);
+
+            if (time_progressed > 0) {
+                this._message_time_offset = 0;
+            }
         }
 
         this._last_performance_now = performance_now;
