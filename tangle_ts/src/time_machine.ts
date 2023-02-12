@@ -133,8 +133,11 @@ export class TimeMachine {
             j += 1;
         }
 
-        // If there's no "fixed_update" function change behavior to account for that.
-        if (time_machine._fixed_update_index === undefined) {
+        // Default to 60 frame-per second if unspecified.
+        // If there's no "fixed_update" function do not generate 'fixed_update' calls.
+        if (time_machine._fixed_update_index !== undefined) {
+            time_machine._fixed_update_interval ??= 1000 / 60;
+        } else {
             time_machine._fixed_update_interval = undefined;
         }
 
