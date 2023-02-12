@@ -278,10 +278,39 @@ export class Room {
 
     private make_rtc_peer_connection(peer_ip: string, peer_id: PeerId, server_socket: WebSocket): RTCPeerConnection {
 
-        const ICE_SERVERS = [
+        /*
+        const ice_servers = [
             { urls: "stun:stun1.l.google.com:19302" },
         ];
-        const peer_connection = new RTCPeerConnection({ 'iceServers': ICE_SERVERS });
+        */
+        // TODO: Do not use metered's Turn servers
+        // Investigate routing traffic through Tangle's matchmaking server or other Tangle servers.
+        // TODO: Expose this as a configurable option.
+        const ice_servers = [
+            {
+                urls: "stun:relay.metered.ca:80",
+            },
+            {
+                urls: "stun:stun1.l.google.com:19302"
+            },
+            {
+                urls: "turn:relay.metered.ca:80",
+                username: "acb3fd59dc274dbfd4e9ef21",
+                credential: "1zeDaNt7C85INfxl",
+            },
+            {
+                urls: "turn:relay.metered.ca:443",
+                username: "acb3fd59dc274dbfd4e9ef21",
+                credential: "1zeDaNt7C85INfxl",
+            },
+            {
+                urls: "turn:relay.metered.ca:443?transport=tcp",
+                username: "acb3fd59dc274dbfd4e9ef21",
+                credential: "1zeDaNt7C85INfxl",
+            },
+        ];
+
+        const peer_connection = new RTCPeerConnection({ 'iceServers': ice_servers });
 
         // TODO: If this is swapped to a more unreliable UDP-like protocol then ordered and maxRetransmits should be set to false and 0.
         //
