@@ -1,8 +1,7 @@
 {
   "name": "tangle-sync",
-  "version": "1.0.0",
+  "version": "0.1.1",
   "description": "",
-  "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -14,7 +13,12 @@
   },
   "keywords": [],
   "author": "",
-  "dependencies": {
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^5.50.0",
+    "@typescript-eslint/parser": "^5.50.0",
+    "eslint": "^8.33.0",
+    "typescript": "^4.9.5",
     "esbuild": "0.17.3"
-  }
+  },
+  "license": "MIT"
 }
