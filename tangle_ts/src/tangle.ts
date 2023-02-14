@@ -138,14 +138,12 @@ export class Tangle {
             ice_servers: this._configuration.ice_servers,
             room_name,
             on_peer_joined: (peer_id: PeerId) => {
-                this._run_inner_function(async () => {
-                    this._peer_data.set(peer_id, {
-                        last_sent_message: 0,
-                        last_received_message: Number.MAX_VALUE,
-                        round_trip_time: 0,
-                    });
-                    this._room.send_message(this._encode_bounce_back_message(), peer_id);
+                this._peer_data.set(peer_id, {
+                    last_sent_message: 0,
+                    last_received_message: 0,
+                    round_trip_time: 0,
                 });
+                this._room.send_message(this._encode_bounce_back_message(), peer_id);
             },
             on_peer_left: (peer_id: PeerId) => {
                 this._run_inner_function(async () => {
@@ -236,7 +234,7 @@ export class Tangle {
                                 });
                             } else {
                                 console.log("Remote Wasm call: ", this._time_machine.get_function_name(m.function_index));
-                                await this._time_machine.call_with_time_stamp(m.function_index, m.args, time_stamp, true);
+                                await this._time_machine.call_with_time_stamp(m.function_index, m.args, time_stamp);
                                 if (!(this._time_machine._fixed_update_interval)) {
                                     this.progress_time();
                                 }
@@ -260,7 +258,7 @@ export class Tangle {
 
                                 // Apply any messages that were received as we were waiting for this to load.
                                 for (const m of this._buffered_messages) {
-                                    await this._time_machine.call_with_time_stamp(m.function_export_index, m.args, m.time_stamp,);
+                                    await this._time_machine.call_with_time_stamp(m.function_export_index, m.args, m.time_stamp);
                                 }
                                 this._buffered_messages = [];
 
@@ -448,10 +446,13 @@ export class Tangle {
 
             const function_index = this._time_machine.get_function_export_index(function_name);
             if (function_index !== undefined) {
-                await this._time_machine.call_with_time_stamp(function_index, args_processed, time_stamp, true);
+                await this._time_machine.call_with_time_stamp(function_index, args_processed, time_stamp);
 
-                // Network the call
-                this._room.send_message(this._encode_wasm_call_message(function_index, time_stamp.time, args_processed));
+                // Do not send events to the room if we're not yet fully connected.
+                if (this._tangle_state == TangleState.Connected) {
+                    // Network the call
+                    this._room.send_message(this._encode_wasm_call_message(function_index, time_stamp.time, args_processed));
+                }
 
                 for (const value of this._peer_data.values()) {
                     value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
@@ -494,19 +495,22 @@ export class Tangle {
         if (this._last_performance_now) {
             let time_progressed = performance_now - this._last_performance_now;
 
-            // If the client is over 2 seconds behind assume they need to be resynced.
-            const time_diff = (this._time_machine.target_time() + time_progressed) - this._time_machine.current_simulation_time();
-            if (this._time_machine._fixed_update_interval !== undefined && time_diff > 2000) {
+            const check_for_resync = true;
+            if (check_for_resync) {
+                // If the client is over 2 seconds behind assume they need to be resynced.
+                const time_diff = (this._time_machine.target_time() + time_progressed) - this._time_machine.current_simulation_time();
+                if (this._time_machine._fixed_update_interval !== undefined && time_diff > 2000) {
 
-                // TODO: This time change means that this peer cannot be trusted as an authority on the room simulation.
-                // The peer should stop sending events and should absolutely not synchronize state with other peers.
-                time_progressed = this._time_machine._fixed_update_interval;
+                    // TODO: This time change means that this peer cannot be trusted as an authority on the room simulation.
+                    // The peer should stop sending events and should absolutely not synchronize state with other peers.
+                    time_progressed = this._time_machine._fixed_update_interval;
 
-                if (this._peer_data.size > 0) {
-                    console.log("[tangle] Fallen over 2 seconds behind, attempting to resync with room");
-                    this._request_heap();
-                } else {
-                    console.log("[tangle] Fallen over 2 seconds behind but this is a single-player session, so ignoring this");
+                    if (this._peer_data.size > 0) {
+                        console.log("[tangle] Fallen over 2 seconds behind, attempting to resync with room");
+                        this._request_heap();
+                    } else {
+                        console.log("[tangle] Fallen over 2 seconds behind but this is a single-player session, so ignoring this");
+                    }
                 }
             }
 
@@ -529,17 +533,19 @@ export class Tangle {
             // Keep track of when a message was received from each peer
             // and use that to determine what history is safe to throw away.
             let earliest_safe_memory = this._time_machine.current_simulation_time();
-            for (const [peer_id, value] of this._peer_data) {
-                earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
 
-                // If we haven't messaged our peers in a while send them a message
-                // This lets them know nothing has happened and they can discard history.
-                // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
-                // it'd be better to figure out if those could be used instead.
-                const KEEP_ALIVE_THRESHOLD = 200;
-                const current_time = this._time_machine.target_time();
-                if ((current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
-                    this._room.send_message(this._encode_time_progressed_message(current_time), peer_id);
+            if (this._tangle_state == TangleState.Connected) {
+                for (const [peer_id, value] of this._peer_data) {
+                    earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
+                    // If we haven't messaged our peers in a while send them a message
+                    // This lets them know nothing has happened and they can discard history.
+                    // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
+                    // it'd be better to figure out if those could be used instead.
+                    const KEEP_ALIVE_THRESHOLD = 200;
+                    const current_time = this._time_machine.target_time();
+                    if ((current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
+                        this._room.send_message(this._encode_time_progressed_message(current_time), peer_id);
+                    }
                 }
             }
 
@@ -561,8 +567,8 @@ export class Tangle {
         return this._time_machine.read_string(address, length);
     }
 
-    disconnect() {
-        this._room.disconnect();
+    print_history() {
+        this._time_machine.print_history();
     }
 }
 

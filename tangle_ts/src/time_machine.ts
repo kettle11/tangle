@@ -27,7 +27,7 @@ export type FunctionCall = {
     function_export_index: number,
     args: Array<number>,
     time_stamp: TimeStamp,
-    record_hash?: boolean
+    hash?: Uint8Array
 };
 
 export type WasmSnapshot = {
@@ -39,6 +39,10 @@ export type WasmSnapshot = {
 
 type Event = FunctionCall;
 const decoder = new TextDecoder();
+
+// Used for debugging
+let action_log = "";
+const debug_mode = false;
 
 export class TimeMachine {
     _fixed_update_interval?: number;
@@ -167,11 +171,14 @@ export class TimeMachine {
     }
 
     /// Returns the function call of this instance.
-    async call_with_time_stamp(function_export_index: number, args: Array<number>, time_stamp: TimeStamp, record_hash = false) {
+    async call_with_time_stamp(function_export_index: number, args: Array<number>, time_stamp: TimeStamp) {
         if (time_stamp_compare(time_stamp, this._snapshots[0].time_stamp) == -1) {
             // TODO: This is an error. It's no longer possible to add events in the past.
             // Report a desync here.
             console.error("[tangle error] Attempting to rollback to before earliest safe time");
+            console.error("Event Time: ", time_stamp);
+            console.error("Earlieset Snapshot Time: ", this._snapshots[0].time_stamp);
+            throw new Error("[tangle error] Attempting to rollback to before earliest safe time");
         }
 
         // To avoid excessive reordering insert recurring function calls that
@@ -187,27 +194,41 @@ export class TimeMachine {
                     break outer_loop;
                 case 1:
                     break;
-                case 0:
-                    // TODO: This is an error! There should not be duplicate time-stamped events.
-                    // Report a desync here.
-                    console.error("[tangle error] Attempted to call a function with a duplicate time stamp.");
+                case 0: {
+                    const event = this._events[i];
+                    if (function_export_index != event.function_export_index || !(array_equals(args, event.args))) {
+                        // TODO: This is an error! There should not be duplicate time-stamped events.
+                        // Report a desync here.
+                        console.error("[tangle error] Attempted to call a function with a duplicate time stamp.");
+                        console.log("Event Time: ", time_stamp);
+                        console.log("Function name: ", this.get_function_name(function_export_index));
+                        throw new Error("[tangle error] Attempted to call a function with a duplicate time stamp.");
+                    }
+                    // If this event is a duplicate but is exactly the same as an existing event we can safely ignore it.
                     return;
+                }
             }
         }
 
-
         if (time_stamp_compare(time_stamp, this._current_simulation_time) == -1) {
-            // This will cause a rollback next time `simulate_forward` is called.
-            this._need_to_rollback_to_time = time_stamp;
+            // Make sure to rollback to the furthest point in the past that's required. 
+            if (this._need_to_rollback_to_time === undefined || time_stamp_compare(time_stamp, this._need_to_rollback_to_time) == -1) {
+                // This will cause a rollback next time `simulate_forward` is called.
+                this._need_to_rollback_to_time = time_stamp;
+            }
         }
 
-        // Insert after the found insertion point.
-        this._events.splice(i + 1, 0, {
+        const event = {
             function_export_index,
             args,
             time_stamp,
-            record_hash
-        });
+        };
+        // Insert after the found insertion point.
+        this._events.splice(i + 1, 0, event);
+
+        if (debug_mode) {
+            action_log += `Inserting call ${i + 1} ${event.time_stamp.time} ${event.time_stamp.player_id} ${this.get_function_name(event.function_export_index)}\n`
+        }
     }
 
     /// Call a function but ensure its results do not persist and cannot cause a desync.
@@ -260,6 +281,9 @@ export class TimeMachine {
         if (this._need_to_rollback_to_time !== undefined) {
             // Perform a rollback here.
 
+            if (debug_mode) {
+                action_log += `Target rollback time: ${this._need_to_rollback_to_time.time} ${this._need_to_rollback_to_time.player_id}\n`;
+            }
             // Apply the most recent snapshot.
             let i = this._snapshots.length - 1;
             for (; i >= 0; --i) {
@@ -273,6 +297,10 @@ export class TimeMachine {
 
             // Remove future snapshots
             this._snapshots.splice(i, this._snapshots.length - i);
+
+            if (debug_mode) {
+                action_log += `Rolling back to: ${snap_shot.time_stamp.time} ${snap_shot.time_stamp.player_id}\n`;
+            }
 
             // Begin simulation from the event that occurred after the snapshot rolled back to.
             this._current_simulation_time = snap_shot.time_stamp;
@@ -290,13 +318,18 @@ export class TimeMachine {
         const function_call = this._events[i];
         if (function_call !== undefined && function_call.time_stamp.time <= this._target_time) {
             const f = this._exports[function_call.function_export_index] as CallableFunction;
-            if (function_call.record_hash) {
-                // console.log("HASH BEFORE: ", this.hash_wasm_state());
-            }
+
             f(...function_call.args);
-            if (function_call.record_hash) {
-                // console.log("HASH AFTER: ", this.hash_wasm_state());
+
+            if (debug_mode) {
+                function_call.hash = this.hash_wasm_state();
             }
+
+            if (action_log) {
+                const event = function_call;
+                action_log += `i ${event.time_stamp.time} ${event.time_stamp.player_id} ${this.get_function_name(event.function_export_index)} ${event.hash}\n`
+            }
+
             this._current_simulation_time = function_call.time_stamp;
             return true;
         }
@@ -321,6 +354,10 @@ export class TimeMachine {
     }
 
     remove_history_before(time: number) {
+        if (debug_mode) {
+            return;
+        }
+
         // Remove all events and snapshots that occurred before this time.
         // Progress the safe time. 
         // Always leave at least one snapshot to rollback to.
@@ -474,6 +511,7 @@ export class TimeMachine {
         for (let i = 0; i < events_length; ++i) {
             const function_export_index = reader.read_u32();
             const time_stamp = reader.read_time_stamp();
+
             const args_length = reader.read_u8();
             const args = new Array(args_length);
             for (let j = 0; j < args_length; ++j) {
@@ -482,7 +520,7 @@ export class TimeMachine {
             this._events[i] = {
                 function_export_index,
                 time_stamp,
-                args
+                args,
             };
 
             if (!(time_stamp_compare(last_time_stamp, time_stamp) == -1)) {
@@ -506,10 +544,21 @@ export class TimeMachine {
 
     print_history() {
         let history = "";
+        let previous_time_stamp = { time: -1, player_id: 0 };
         for (const event of this._events) {
-            history += `${event.time_stamp.time} ${event.time_stamp.player_id} ${event.function_export_index}\n`
+            if (time_stamp_compare(previous_time_stamp, event.time_stamp) != -1) {
+                history += "ERROR: OUT OF ORDER TIMESTAMPS\n";
+            }
+            history += `${event.time_stamp.time} ${event.time_stamp.player_id} ${this.get_function_name(event.function_export_index)} ${event.hash}\n`
+            previous_time_stamp = event.time_stamp;
         }
+        console.log(action_log);
         console.log(history);
     }
 
+}
+
+function array_equals(a: number[], b: number[]) {
+    return a.length === b.length &&
+        a.every((val, index) => val === b[index]);
 }
