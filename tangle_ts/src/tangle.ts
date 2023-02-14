@@ -420,6 +420,11 @@ export class Tangle {
         });
     }
 
+    private _median_round_trip_latency(): number | undefined {
+        const latencies = Array.from(this._peer_data.values()).map((peer) => peer.round_trip_time).sort();
+        return latencies[Math.floor(latencies.length / 2)];
+    }
+
     call(function_name: string, ...args: Array<number | UserIdType>) {
         this._run_inner_function(async () => {
 
@@ -428,21 +433,23 @@ export class Tangle {
             // As-is this design makes it trivial for peers to spoof each-other.
             const args_processed = this._process_args(args);
 
+            // TODO: This is very arbitrary. 
+            // TODO: This trusts the high-latency peer to be well-behaved, there should be a way for the room to enforce this.
+            // This adds some latency to very laggy peers to make rollbacks less likely.
+            let median_round_trip_latency = this._median_round_trip_latency();
+            if (median_round_trip_latency === undefined || median_round_trip_latency < 60) {
+                median_round_trip_latency = 0;
+            }
+            median_round_trip_latency = Math.min(median_round_trip_latency, 200);
+
             const time_stamp = {
-                time: this._time_machine.target_time() + this._message_time_offset,
+                time: this._time_machine.target_time() + this._message_time_offset + median_round_trip_latency / 2,
                 player_id: this._room.my_id
             };
 
             // Ensure events each have a unique timestamp.
             // In practice this tiny offset should be of no consequence.
             this._message_time_offset += .0001;
-
-            // Adding time delay here decreases responsivity but also decreases the likelihood
-            // peers will have to rollback.
-            // This could be a good place to add delay if a peer has higher latency than 
-            // everyone else in the room.
-            // Adding a time delay would look something like this:
-            // time_stamp.time += 50;
 
             const function_index = this._time_machine.get_function_export_index(function_name);
             if (function_index !== undefined) {
@@ -496,20 +503,25 @@ export class Tangle {
             let time_progressed = performance_now - this._last_performance_now;
 
             const check_for_resync = true;
+
             if (check_for_resync) {
-                // If the client is over 2 seconds behind assume they need to be resynced.
+                // If the client is the threshold behind assume they need to be resynced.
                 const time_diff = (this._time_machine.target_time() + time_progressed) - this._time_machine.current_simulation_time();
-                if (this._time_machine._fixed_update_interval !== undefined && time_diff > 2000) {
+                if (this._time_machine._fixed_update_interval !== undefined && time_diff > 3000) {
 
                     // TODO: This time change means that this peer cannot be trusted as an authority on the room simulation.
                     // The peer should stop sending events and should absolutely not synchronize state with other peers.
+                    // TODO: If a peer that's fallen behind receives a snapshot from another peer that's fallen behind
+                    // that can cause an infinite loop between the peers.
                     time_progressed = this._time_machine._fixed_update_interval;
 
                     if (this._peer_data.size > 0) {
-                        console.log("[tangle] Fallen over 2 seconds behind, attempting to resync with room");
-                        this._request_heap();
+                        // TODO: Resync instead of reload.
+                        location.reload();
+                        console.log("[tangle] Fallen behind, reloading room");
+                        // this._request_heap();
                     } else {
-                        console.log("[tangle] Fallen over 2 seconds behind but this is a single-player session, so ignoring this");
+                        console.log("[tangle] Fallen behind but this is a single-player session, so ignoring this");
                     }
                 }
             }
@@ -522,6 +534,7 @@ export class Tangle {
             while (this._time_machine.step()) {
                 // TODO: A better heuristic for when snapshots should be taken.
                 // They could be taken after a set amount of computational overhead.
+                // Taking a snapshot here is extremely costly!
                 this._time_machine.take_snapshot();
                 if ((performance.now() - time_here) > time_budget) {
                     break;
