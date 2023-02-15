@@ -33,7 +33,13 @@ export class RustUtilities {
         const url = new URL(import.meta.url);
         const url_without_file = url.origin + url.pathname.substring(0, url.pathname.lastIndexOf("/") + 1);
         const final_url = new URL("rust_utilities.wasm", url_without_file);
-        const rust_utilities = await WebAssembly.instantiateStreaming(fetch(final_url), imports);
+
+        const binary = await fetch(final_url)
+            .then((response) => response.arrayBuffer());
+
+        // TODO: instantiateStreaming would be better here but I was having issues with the mime-type when
+        // hosting on CloudFlare. Investigation needed.
+        const rust_utilities = await WebAssembly.instantiate(binary, imports);
         return new RustUtilities(rust_utilities);
     }
 

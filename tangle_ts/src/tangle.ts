@@ -20,6 +20,10 @@ type PeerData = {
     last_sent_message: number,
     last_received_message: number,
     round_trip_time: number,
+    // When the current time was measured
+    estimated_current_time_measurement: number,
+    // Based on round trip latency this is an estimate of the remote peer's perceived current time.
+    estimated_current_time?: number
 }
 
 export enum TangleState {
@@ -39,6 +43,7 @@ type TangleConfiguration = {
 
 type InstantiatedTangle = {
     instance: {
+        // TODO: More explicit types, don't use `any`
         exports: Record<string, any>,
     },
     tangle: Tangle
@@ -46,6 +51,8 @@ type InstantiatedTangle = {
 
 class UserIdType { }
 export const UserId = new UserIdType();
+
+const ROUND_TRIP_TIME_ROLLING_AVERAGE_ALPHA = 0.9;
 
 export class Tangle {
     private _room!: Room;
@@ -142,8 +149,10 @@ export class Tangle {
                     last_sent_message: 0,
                     last_received_message: 0,
                     round_trip_time: 0,
+                    estimated_current_time_measurement: 0,
+                    estimated_current_time: undefined
                 });
-                this._room.send_message(this._encode_bounce_back_message(), peer_id);
+                this._room.send_message(this._encode_ping_message(), peer_id);
             },
             on_peer_left: (peer_id: PeerId) => {
                 this._run_inner_function(async () => {
@@ -270,13 +279,28 @@ export class Tangle {
                             break;
                         }
                         case (MessageType.Ping): {
-                            message[0] = MessageType.Pong;
-                            this._room.send_message(message, peer_id);
+                            const writer = new MessageWriterReader(this._outgoing_message_buffer);
+                            writer.write_u8(MessageType.Pong);
+                            writer.write_raw_bytes(message_data);
+                            // Send the average of the peers current times
+                            // This should help peers converge on a common sense of time.
+                            writer.write_f64(this._average_current_time(performance.now()));
+                            this._room.send_message(writer.get_result_array(), peer_id);
                             break;
                         }
                         case (MessageType.Pong): {
-                            const time = this._decode_bounce_back_return(message_data);
-                            peer.round_trip_time = Date.now() - time;
+                            // TODO: Check that the peer hasn't messed with this message's time.
+                            const { time_sent, current_time } = this._decode_pong_message(message_data);
+                            const new_round_trip_time = Date.now() - time_sent;
+                            if (peer.round_trip_time == 0) {
+                                peer.round_trip_time = new_round_trip_time;
+                            } else {
+                                peer.round_trip_time = peer.round_trip_time
+                                    * ROUND_TRIP_TIME_ROLLING_AVERAGE_ALPHA
+                                    + (1.0 - ROUND_TRIP_TIME_ROLLING_AVERAGE_ALPHA) * new_round_trip_time;
+                            }
+                            peer.estimated_current_time = current_time + peer.round_trip_time / 2;
+                            peer.estimated_current_time_measurement = performance.now();
                             break;
                         }
                     }
@@ -323,7 +347,7 @@ export class Tangle {
         const lowest_latency_peer = this._room.get_lowest_latency_peer();
         if (lowest_latency_peer) {
             this._change_state(TangleState.RequestingHeap);
-            this._room.send_message(this._encode_bounce_back_message(), lowest_latency_peer);
+            this._room.send_message(this._encode_ping_message(), lowest_latency_peer);
             this._room.send_message(this._encode_request_heap_message(), lowest_latency_peer);
         }
     }
@@ -397,16 +421,18 @@ export class Tangle {
         return this._outgoing_message_buffer.subarray(0, 1);
     }
 
-    private _encode_bounce_back_message(): Uint8Array {
+    private _encode_ping_message(): Uint8Array {
         const writer = new MessageWriterReader(this._outgoing_message_buffer);
         writer.write_u8(MessageType.Ping);
         writer.write_f64(Date.now());
         return writer.get_result_array();
     }
 
-    private _decode_bounce_back_return(data: Uint8Array): number {
+    private _decode_pong_message(data: Uint8Array): { time_sent: number, current_time: number } {
         const reader = new MessageWriterReader(data);
-        return reader.read_f64();
+        const time_sent = reader.read_f64();
+        const current_time = reader.read_f64();
+        return { time_sent, current_time }
     }
 
     private _process_args(args: Array<number | UserIdType>): Array<number> {
@@ -442,6 +468,7 @@ export class Tangle {
             }
             median_round_trip_latency = Math.min(median_round_trip_latency, 200);
 
+            // TODO: If median_round_trip_latency changes a lot this could violate the rule of never sending messages with past time-stamps.
             const time_stamp = {
                 time: this._time_machine.target_time() + this._message_time_offset + median_round_trip_latency / 2,
                 player_id: this._room.my_id
@@ -458,6 +485,8 @@ export class Tangle {
                 // Do not send events to the room if we're not yet fully connected.
                 if (this._tangle_state == TangleState.Connected) {
                     // Network the call
+                    // TODO: These ping messages do not need to be sent so frequently or can be bundled with other messages.
+                    this._room.send_message(this._encode_ping_message());
                     this._room.send_message(this._encode_wasm_call_message(function_index, time_stamp.time, args_processed));
                 }
 
@@ -500,10 +529,16 @@ export class Tangle {
         const performance_now = performance.now();
 
         if (this._last_performance_now) {
-            let time_progressed = performance_now - this._last_performance_now;
+            const average_current_time = this._average_current_time(performance_now);
+            const difference_from_peers = average_current_time - this.current_time(performance_now);
+
+            let time_progressed = performance_now - this._last_performance_now + difference_from_peers;
+            console.log("DIFFERENCE FROM PEERS: ", difference_from_peers);
+            //console.log("TIME PROGRESSED: ", time_progressed);
+            // Time cannot flow backwards.
+            time_progressed = Math.max(time_progressed, 0.0001);
 
             const check_for_resync = true;
-
             if (check_for_resync) {
                 // If the client is the threshold behind assume they need to be resynced.
                 const time_diff = (this._time_machine.target_time() + time_progressed) - this._time_machine.current_simulation_time();
@@ -556,14 +591,21 @@ export class Tangle {
                     // it'd be better to figure out if those could be used instead.
                     const KEEP_ALIVE_THRESHOLD = 200;
                     const current_time = this._time_machine.target_time();
-                    if ((current_time - value.last_sent_message) > KEEP_ALIVE_THRESHOLD) {
+                    const difference = (current_time - value.last_sent_message);
+                    if (difference > KEEP_ALIVE_THRESHOLD) {
+                        // TODO: These ping messages do not need to be sent so frequently or can be bundled with other messages.
+                        this._room.send_message(this._encode_ping_message(), peer_id);
                         this._room.send_message(this._encode_time_progressed_message(current_time), peer_id);
+                    }
+
+                    if (difference <= 0) {
+                        console.error("SHOULD NOT BE HERE!");
                     }
                 }
             }
 
             // TODO: The -50 here is masking some sort of bug where a crash occurs because there's no available snapshot.
-            this._time_machine.remove_history_before(earliest_safe_memory - 50);
+            this._time_machine.remove_history_before(earliest_safe_memory);
 
             if (time_progressed > 0) {
                 this._message_time_offset = 0;
@@ -571,6 +613,31 @@ export class Tangle {
         }
 
         this._last_performance_now = performance_now;
+    }
+
+    _average_current_time(now: number): number {
+        let current_time = this._time_machine.target_time();
+        if (this._last_performance_now) {
+            current_time += now - this._last_performance_now;
+        }
+
+        let count = 1;
+        for (const peer of this._peer_data.values()) {
+            if (peer.estimated_current_time) {
+                current_time += peer.estimated_current_time + (now - peer.estimated_current_time_measurement);
+                count += 1;
+            }
+        }
+        current_time = current_time / count;
+        return current_time;
+    }
+
+    current_time(now: number): number {
+        let time = this._time_machine.target_time();
+        if (this._last_performance_now) {
+            time += now - this._last_performance_now;
+        }
+        return time;
     }
 
     read_memory(address: number, length: number): Uint8Array {

@@ -398,6 +398,8 @@ export class TimeMachine {
             memory = new Uint8Array(memory);
         }
 
+        // console.log("TOTAL SIZE: ", this._snapshots.length * memory.byteLength);
+
         return {
             // This nested Uint8Array constructor creates a deep copy.
             memory,
