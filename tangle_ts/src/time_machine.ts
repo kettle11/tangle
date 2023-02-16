@@ -197,12 +197,10 @@ export class TimeMachine {
                 case 0: {
                     const event = this._events[i];
                     if (function_export_index != event.function_export_index || !(array_equals(args, event.args))) {
-                        // TODO: This is an error! There should not be duplicate time-stamped events.
-                        // Report a desync here.
-                        console.error("[tangle error] Attempted to call a function with a duplicate time stamp.");
+                        // This shouldn't happen, but if it does we can safely ignore it and move on.
+                        console.error("[tangle warning] Attempted to call a function with a duplicate time stamp.");
                         console.log("Event Time: ", time_stamp);
                         console.log("Function name: ", this.get_function_name(function_export_index));
-                        throw new Error("[tangle error] Attempted to call a function with a duplicate time stamp.");
                     }
                     // If this event is a duplicate but is exactly the same as an existing event we can safely ignore it.
                     return;

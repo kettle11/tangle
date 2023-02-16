@@ -599,7 +599,7 @@ export class Tangle {
             this._time_machine.remove_history_before(earliest_safe_memory);
 
             if (time_progressed > 0) {
-                this._message_time_offset = 0;
+                this._message_time_offset = 0.0001;
             }
         }
 
