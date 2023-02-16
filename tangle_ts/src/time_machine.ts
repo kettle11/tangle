@@ -149,6 +149,7 @@ export class TimeMachine {
 
         time_machine._snapshots = [time_machine._get_wasm_snapshot()];
 
+        console.log("🚀⏳ Time Machine Activated ⏳🚀");
         return time_machine;
     }
 

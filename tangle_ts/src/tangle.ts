@@ -126,6 +126,8 @@ export class Tangle {
     private _change_state(state: TangleState) {
         if (this._tangle_state != state) {
             if (state == TangleState.Connected) {
+                console.log("🌱 Tangle State: ", TangleState[state]);
+                console.log("Learn more about Tangle at https://tanglesync.com");
                 this._last_performance_now = performance.now();
             }
             this._tangle_state = state;
