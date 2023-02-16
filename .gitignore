@@ -1,5 +1,4 @@
 */target
-/tangle_ts/dist/*
 /web_example/kenney_pixelplatformer/
 /web_example/*.wasm
 /web_example/tangle.js
