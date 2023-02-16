@@ -9,8 +9,8 @@ Tangle is a library that aims to make multiplayer apps and games far easier to b
 Tangle 'magically' wraps WebAssembly so you can write programs without worrying about message passing, serialization, or consensus.
 
 
-[Play with a live demo:](tanglesync.com)
-[![1500x500](https://user-images.githubusercontent.com/4565191/219482853-ac964fbd-a40f-4507-851a-5152c12d71f8.jpeg)](tanglesync.com)
+[Play with a live demo:](https://tanglesync.com)
+[![1500x500](https://user-images.githubusercontent.com/4565191/219482853-ac964fbd-a40f-4507-851a-5152c12d71f8.jpeg)](https://tanglesync.com)
 
 [Check out the examples to get started!](examples)
 
