@@ -526,7 +526,7 @@ export class TimeMachine {
             };
 
             if (!(time_stamp_compare(last_time_stamp, time_stamp) == -1)) {
-                console.log("ERROR: INCOMING TIME STAMPS OUT OF ORDER");
+                console.error("[time-machine] Error: Incoming time stamps out of order");
             }
             last_time_stamp = time_stamp;
         }

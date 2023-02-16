@@ -17,7 +17,6 @@ enum MessageType {
 }
 
 type PeerData = {
-    last_sent_message: number,
     last_received_message: number,
     round_trip_time: number,
     // When the current time was measured
@@ -70,6 +69,8 @@ export class Tangle {
     private _outgoing_message_buffer = new Uint8Array(500);
 
     private _message_time_offset = 0;
+
+    private _last_sent_message = 0;
 
     // private _debug_enabled = true;
 
@@ -146,7 +147,6 @@ export class Tangle {
             room_name,
             on_peer_joined: (peer_id: PeerId) => {
                 this._peer_data.set(peer_id, {
-                    last_sent_message: 0,
                     last_received_message: 0,
                     round_trip_time: 0,
                     estimated_current_time_measurement: 0,
@@ -242,7 +242,7 @@ export class Tangle {
                                     args: m.args
                                 });
                             } else {
-                                console.log("Remote Wasm call: ", this._time_machine.get_function_name(m.function_index));
+                                console.log("[tangle] Remote Wasm call: ", this._time_machine.get_function_name(m.function_index));
                                 await this._time_machine.call_with_time_stamp(m.function_index, m.args, time_stamp);
                                 if (!(this._time_machine._fixed_update_interval)) {
                                     this.progress_time();
@@ -466,11 +466,14 @@ export class Tangle {
             if (median_round_trip_latency === undefined || median_round_trip_latency < 60) {
                 median_round_trip_latency = 0;
             }
-            median_round_trip_latency = Math.min(median_round_trip_latency, 200);
+            median_round_trip_latency = Math.min(median_round_trip_latency, 150);
 
-            // TODO: If median_round_trip_latency changes a lot this could violate the rule of never sending messages with past time-stamps.
+            // Ensure that a message is not sent with a timestamp prior to a previously sent message.
+            // If this client has high-latency add input latency to reduce the rollback jank for peers.
+            const message_time = Math.max(this._last_sent_message, this._time_machine.target_time() + median_round_trip_latency) + this._message_time_offset;
+
             const time_stamp = {
-                time: this._time_machine.target_time() + this._message_time_offset + median_round_trip_latency / 2,
+                time: message_time,
                 player_id: this._room.my_id
             };
 
@@ -490,9 +493,8 @@ export class Tangle {
                     this._room.send_message(this._encode_wasm_call_message(function_index, time_stamp.time, args_processed));
                 }
 
-                for (const value of this._peer_data.values()) {
-                    value.last_sent_message = Math.max(value.last_received_message, time_stamp.time);
-                }
+                this._last_sent_message = Math.max(this._last_sent_message, time_stamp.time);
+
             }
         });
 
@@ -533,28 +535,25 @@ export class Tangle {
             const difference_from_peers = average_current_time - this.current_time(performance_now);
 
             let time_progressed = performance_now - this._last_performance_now + difference_from_peers;
-            console.log("DIFFERENCE FROM PEERS: ", difference_from_peers);
-            //console.log("TIME PROGRESSED: ", time_progressed);
+
             // Time cannot flow backwards.
-            time_progressed = Math.max(time_progressed, 0.0001);
+            time_progressed = Math.max(time_progressed, 0.001);
 
             const check_for_resync = true;
-            if (check_for_resync) {
+            // Only check for resync if we're connected to the room.
+            if (check_for_resync && this._tangle_state == TangleState.Connected) {
                 // If the client is the threshold behind assume they need to be resynced.
                 const time_diff = (this._time_machine.target_time() + time_progressed) - this._time_machine.current_simulation_time();
                 if (this._time_machine._fixed_update_interval !== undefined && time_diff > 3000) {
-
-                    // TODO: This time change means that this peer cannot be trusted as an authority on the room simulation.
-                    // The peer should stop sending events and should absolutely not synchronize state with other peers.
-                    // TODO: If a peer that's fallen behind receives a snapshot from another peer that's fallen behind
-                    // that can cause an infinite loop between the peers.
                     time_progressed = this._time_machine._fixed_update_interval;
 
                     if (this._peer_data.size > 0) {
-                        // TODO: Resync instead of reload.
-                        location.reload();
                         console.log("[tangle] Fallen behind, reloading room");
-                        // this._request_heap();
+                        console.log("Fallen behind amount: ", time_diff);
+
+                        // TODO: Resync with the same peers instead of reload.
+                        // It should be seamless to come back to a tab and rejoin a room.
+                        location.reload();
                     } else {
                         console.log("[tangle] Fallen behind but this is a single-player session, so ignoring this");
                     }
@@ -583,28 +582,20 @@ export class Tangle {
             let earliest_safe_memory = this._time_machine.current_simulation_time();
 
             if (this._tangle_state == TangleState.Connected) {
-                for (const [peer_id, value] of this._peer_data) {
+                for (const value of this._peer_data.values()) {
                     earliest_safe_memory = Math.min(earliest_safe_memory, value.last_received_message);
-                    // If we haven't messaged our peers in a while send them a message
-                    // This lets them know nothing has happened and they can discard history.
-                    // I suspect the underlying RTCDataChannel protocol is sending keep alives as well,
-                    // it'd be better to figure out if those could be used instead.
-                    const KEEP_ALIVE_THRESHOLD = 200;
-                    const current_time = this._time_machine.target_time();
-                    const difference = (current_time - value.last_sent_message);
-                    if (difference > KEEP_ALIVE_THRESHOLD) {
-                        // TODO: These ping messages do not need to be sent so frequently or can be bundled with other messages.
-                        this._room.send_message(this._encode_ping_message(), peer_id);
-                        this._room.send_message(this._encode_time_progressed_message(current_time), peer_id);
-                    }
+                }
 
-                    if (difference <= 0) {
-                        console.error("SHOULD NOT BE HERE!");
-                    }
+                const KEEP_ALIVE_THRESHOLD = 200;
+                const current_time = this._time_machine.target_time();
+                const difference = (current_time - this._last_sent_message);
+                if (difference > KEEP_ALIVE_THRESHOLD) {
+                    // TODO: These ping messages do not need to be sent so frequently or can be bundled with other messages.
+                    this._room.send_message(this._encode_ping_message());
+                    this._room.send_message(this._encode_time_progressed_message(current_time));
                 }
             }
 
-            // TODO: The -50 here is masking some sort of bug where a crash occurs because there's no available snapshot.
             this._time_machine.remove_history_before(earliest_safe_memory);
 
             if (time_progressed > 0) {
@@ -622,10 +613,12 @@ export class Tangle {
         }
 
         let count = 1;
-        for (const peer of this._peer_data.values()) {
-            if (peer.estimated_current_time) {
-                current_time += peer.estimated_current_time + (now - peer.estimated_current_time_measurement);
-                count += 1;
+        if (this._tangle_state == TangleState.Connected) {
+            for (const peer of this._peer_data.values()) {
+                if (peer.estimated_current_time) {
+                    current_time += peer.estimated_current_time + (now - peer.estimated_current_time_measurement);
+                    count += 1;
+                }
             }
         }
         current_time = current_time / count;

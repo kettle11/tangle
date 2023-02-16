@@ -60,7 +60,8 @@ export class Room {
     private _rust_utilities: RustUtilities;
     private _server_socket?: WebSocket;
 
-    my_id = 0;
+    // Default to 1 because 0 conflicts with the 'system' ID.
+    my_id = 1;
 
     // Used for testing
     private _artificial_delay = 0;
