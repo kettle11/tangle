@@ -1,22 +1,24 @@
-# Tangle
+## WARNING
 
-[Play with a live demo](tanglesync.com)
+This library is incredibly new. I value building in public so I'm making Tangle available *very* early. As a result Tangle has major bugs, TODOs, and known issues. The library is not stable: it will change constantly! Give it a try, be patient, and consider contributing!
+
+# Tangle
 
 Tangle is a library that aims to make multiplayer apps and games far easier to build.
 
 Tangle 'magically' wraps WebAssembly so you can write programs without worrying about message passing, serialization, or consensus.
 
+
+[Play with a live demo ![1500x500](https://user-images.githubusercontent.com/4565191/219482853-ac964fbd-a40f-4507-851a-5152c12d71f8.jpeg)](tanglesync.com)
+
+
 [Check out the examples to get started!](examples)
-
-## WARNING
-
-This library is incredibly new. It has many bugs, TODOs, and known issues. Give it a try, be patient, and consider contributing!
 
 ## Questions
 
 ### What is this for?
 
-Right now Tangle is great for small games and apps. In the future it may be useful for all sorts of things including (but not limited to): syncing programs between servers / clients, untrusted plugins in networked software, 'metaverse'-like scripting, and backend-less collaborative software.
+Tangle is a great fit for small games and apps that want to add multiplayer. In the future it may be useful for all sorts of things including (but not limited to): syncing programs between servers / clients, untrusted plugins in networked software, 'metaverse'-like scripting, and backend-less collaborative software.
 
 ### Does this use WebSockets or WebRTC? 
 Under the hood Tangle uses peer to peer WebRTC connections. This may change!
