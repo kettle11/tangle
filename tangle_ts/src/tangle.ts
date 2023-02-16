@@ -437,8 +437,7 @@ export class Tangle {
 
     private _process_args(args: Array<number | UserIdType>): Array<number> {
         return args.map((a) => {
-            if (typeof a != "number") {
-                // Assume this is a UserId
+            if (a instanceof UserIdType) {
                 return this._room.my_id;
             } else {
                 return a;
