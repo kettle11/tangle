@@ -1,13 +1,13 @@
 // This file is AssemblyScript
 // Compile with:
-// `asc my_wasm.ts --outFile="dist/my_wasm.wasm"`
+// `asc my_wasm.ts -O --outFile="dist/my_wasm.wasm"`
 
 // These calls are imports from the host environment that are used to interact with the canvas.
 @external("env", "set_color")
-    declare function set_color(r: u8, g: u8, b: u8, a: u8): void
+declare function set_color(r: u8, g: u8, b: u8, a: u8): void
 
 @external("env", "draw_circle")
-    declare function draw_circle(x: f64, y: f64, radius: f64): void
+declare function draw_circle(x: f64, y: f64, radius: f64): void
 
 // Called whenever a user clicks. Each user has a unique ID.
 // Spawn a ball when the player clicks.
@@ -48,16 +48,15 @@ export function fixed_update(): void {
             let a = balls[i];
             let b = balls[j];
             let to_next = b.position.sub(a.position);
-            let length = to_next.length();
+            let length_sq = to_next.length_squared();
 
-            let total_radius = (a.radius + b.radius);
-            if (length < total_radius) {
-                let v = to_next.mul_scalar((1.0 / length) * total_radius);
-                let offset = to_next.sub(v);
-
-                let o = offset.div_scalar(2);
-                a.position = a.position.add(o);
-                b.position = b.position.sub(o);
+            let total_radius = a.radius + b.radius;
+            let total_radius_sq = total_radius * total_radius;
+            if (length_sq < total_radius_sq) {
+                let v = to_next.mul_scalar((1.0 / Math.sqrt(length_sq)) * total_radius);
+                let o = to_next.sub(v).mul_scalar(0.5);
+                a.position.add_self(o);
+                b.position.sub_self(o);
             }
         }
     }
@@ -89,8 +88,9 @@ export function draw(): void {
     for (let i = 0; i < balls.length; ++i) {
         let ball = balls[i];
         let color = ball.color;
+        let pos = ball.position;
         set_color(color.r, color.g, color.b, 255);
-        draw_circle(ball.position.x, ball.position.y, ball.radius);
+        draw_circle(pos.x, pos.y, ball.radius);
     }
 }
 
@@ -118,26 +118,27 @@ class Ball {
 function new_ball(x: f64, y: f64): void {
     let position = new Point(x, y);
     let radius = Math.random() * BALL_MAX_RADIUS + BALL_MIN_RADIUS;
-    let color = new Color();
-    color.r = (Math.random() * 255) as u8;
-    color.g = (Math.random() * 255) as u8;
-    color.b = (Math.random() * 255) as u8;
-
+    let color = new Color(
+        (Math.random() * 255) as u8,
+        (Math.random() * 255) as u8,
+        (Math.random() * 255) as u8
+    );
     balls.push(new Ball(position, radius, color));
 }
 
 class Color {
-    r: u8 = 0; g: u8 = 255; b: u8 = 255;
+    constructor(
+        public r: u8 = 0,
+        public g: u8 = 0,
+        public b: u8 = 0
+    ) {}
 }
 
 class Point {
-    x: f64;
-    y: f64;
-
-    constructor(x: f64, y: f64) {
-        this.x = x;
-        this.y = y;
-    }
+    constructor(
+        public x: f64, 
+        public y: f64
+    ) {}
 
     add(other: Point): Point {
         return new Point(this.x + other.x, this.y + other.y);
@@ -145,6 +146,18 @@ class Point {
 
     sub(other: Point): Point {
         return new Point(this.x - other.x, this.y - other.y);
+    }
+
+    add_self(other: Point): this {
+        this.x += other.x;
+        this.y += other.y;
+        return this;
+    }
+
+    sub_self(other: Point): this {
+        this.x -= other.x;
+        this.y -= other.y;
+        return this;
     }
 
     div_scalar(scalar: f64): Point {
@@ -155,7 +168,11 @@ class Point {
         return new Point(this.x * scalar, this.y * scalar);
     }
 
+    length_squared(): f64 {
+        return this.x * this.x + this.y * this.y;
+    }
+
     length(): f64 {
-        return Math.sqrt(this.x * this.x + this.y * this.y);
+        return Math.sqrt(this.length_squared());
     }
 }
