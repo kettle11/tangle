@@ -965,7 +965,7 @@ var Tangle = class {
     this._rust_utilities = time_machine.rust_utilities;
   }
   // private _debug_enabled = true;
-  static async instanstiate(source, importObject, tangle_configuration) {
+  static async instantiate(source, importObject, tangle_configuration) {
     tangle_configuration ?? (tangle_configuration = {});
     tangle_configuration.accept_new_programs ?? (tangle_configuration.accept_new_programs = false);
     const wasm_binary = new Uint8Array(source);
@@ -998,7 +998,7 @@ var Tangle = class {
   static async instantiateStreaming(source, importObject, tangle_configuration) {
     source = await source;
     const binary = await source.arrayBuffer();
-    return Tangle.instanstiate(new Uint8Array(binary), importObject, tangle_configuration);
+    return Tangle.instantiate(new Uint8Array(binary), importObject, tangle_configuration);
   }
   _change_state(state) {
     if (this._tangle_state != state) {
