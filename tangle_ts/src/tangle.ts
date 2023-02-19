@@ -74,7 +74,7 @@ export class Tangle {
 
     // private _debug_enabled = true;
 
-    static async instanstiate(source: ArrayBuffer, importObject?: WebAssembly.Imports | undefined, tangle_configuration?: TangleConfiguration): Promise<InstantiatedTangle> {
+    static async instantiate(source: ArrayBuffer, importObject?: WebAssembly.Imports | undefined, tangle_configuration?: TangleConfiguration): Promise<InstantiatedTangle> {
         tangle_configuration ??= {};
         tangle_configuration.accept_new_programs ??= false;
 
@@ -115,7 +115,7 @@ export class Tangle {
     static async instantiateStreaming(source: Response | PromiseLike<Response>, importObject?: WebAssembly.Imports | undefined, tangle_configuration?: TangleConfiguration): Promise<InstantiatedTangle> {
         source = await source;
         const binary = await source.arrayBuffer();
-        return Tangle.instanstiate(new Uint8Array(binary), importObject, tangle_configuration);
+        return Tangle.instantiate(new Uint8Array(binary), importObject, tangle_configuration);
     }
 
     constructor(time_machine: TimeMachine) {
