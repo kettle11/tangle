@@ -4,10 +4,16 @@
 
 // These calls are imports from the host environment that are used to interact with the canvas.
 @external("env", "set_color")
-declare function set_color(r: u8, g: u8, b: u8, a: u8): void
+    declare function set_color(r: u8, g: u8, b: u8, a: u8): void
 
 @external("env", "draw_circle")
-declare function draw_circle(x: f64, y: f64, radius: f64): void
+    declare function draw_circle(x: f64, y: f64, radius: f64): void
+
+let array = new Uint8Array(0);
+export function allocate_dirty_flags_array(size_bytes: u32): usize {
+    array = new Uint8Array(size_bytes);
+    return array.dataStart;
+}
 
 // Called whenever a user clicks. Each user has a unique ID.
 // Spawn a ball when the player clicks.
@@ -97,9 +103,11 @@ export function draw(): void {
 const BALL_MAX_RADIUS = 40.0;
 const BALL_MIN_RADIUS = 10.0;
 
-let balls = new Array<Ball>();
+const balls = new Array<Ball>();
 
-new_ball(100, 100);
+for (let i = 0; i < 2000; ++i) {
+    new_ball(100, 100);
+}
 
 class Ball {
     position: Point;
@@ -131,14 +139,14 @@ class Color {
         public r: u8 = 0,
         public g: u8 = 0,
         public b: u8 = 0
-    ) {}
+    ) { }
 }
 
 class Point {
     constructor(
-        public x: f64, 
+        public x: f64,
         public y: f64
-    ) {}
+    ) { }
 
     add(other: Point): Point {
         return new Point(this.x + other.x, this.y + other.y);

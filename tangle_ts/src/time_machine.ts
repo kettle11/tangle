@@ -93,11 +93,23 @@ export class TimeMachine {
                 return 14;
             };
         }
+
+        imports.wasm_guardian = {};
+        imports.wasm_guardian.on_grow = (amount: number) => {
+            /*
+            const dirty_flags = time_machine._wasm_instance.instance.exports["wg_dirty_flags"] as WebAssembly.Table;
+            dirty_flags.grow(amount);
+            console.log("ON GROW: ", time_machine._wasm_instance.instance.exports["wg_dirty_flags"]);
+            */
+
+        };
+        imports.wasm_guardian.on_global_set = () => {
+            // console.log("ON GLOBAL SET");
+        };
         let external_log: (a: number, b: number) => void = () => { console.log("Not implemented") };
         imports.env.external_log ??= (a: number, b: number) => external_log(a, b);
 
-
-        wasm_binary = rust_utilities.process_binary(wasm_binary, true, false);
+        wasm_binary = rust_utilities.process_binary(wasm_binary, true, true);
         const wasm_instance = await WebAssembly.instantiate(wasm_binary, imports);
 
         const time_machine = new TimeMachine(wasm_instance, rust_utilities);
@@ -149,6 +161,12 @@ export class TimeMachine {
 
         time_machine._snapshots = [time_machine._get_wasm_snapshot()];
 
+        if (time_machine._wasm_instance.instance.exports.allocate_dirty_flags_array) {
+            const dirty_flags_size = 20;
+            const dirty_flags_array_pointer = (time_machine._wasm_instance.instance.exports.allocate_dirty_flags_array as CallableFunction)(dirty_flags_size);
+            (time_machine._wasm_instance.instance.exports.wg_dirty_flags as WebAssembly.Global).value = dirty_flags_array_pointer;
+            time_machine.dirty_flags_array = new Uint8Array((time_machine._wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer, dirty_flags_array_pointer, dirty_flags_size);
+        }
         console.log("🚀⏳ Time Machine Activated ⏳🚀");
         return time_machine;
     }
@@ -318,7 +336,11 @@ export class TimeMachine {
         if (function_call !== undefined && function_call.time_stamp.time <= this._target_time) {
             const f = this._exports[function_call.function_export_index] as CallableFunction;
 
+            const now = performance.now();
             f(...function_call.args);
+            if (this.get_function_name(function_call.function_export_index) == "fixed_update") {
+                console.log("TIME: ", performance.now() - now);
+            }
 
             if (debug_mode) {
                 function_call.hash = this.hash_wasm_state();

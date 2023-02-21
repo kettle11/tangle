@@ -1,4 +1,4 @@
-use walrus::ir::RefNull;
+use walrus::ir::{MemArg, RefNull, StoreKind};
 
 /// Transforms a WebAssembly binary to report to the host environment whenever it makes persistent state changes.
 ///
@@ -45,11 +45,15 @@ pub fn transform_wasm_to_track_changes(
 
         let initial_memory = memories.iter().next().unwrap();
 
+        /*
         let dirty_flags_table = tables.add_local(
             (initial_memory.initial * WASM_PAGE_SIZE) / PAGE_SIZE_BYTES,
             None,
             walrus::ValType::Funcref,
         );
+        */
+
+        //  exports.add("wg_dirty_flags", dirty_flags_table);
 
         // Create a unique local identifier, one for each type we'll need to temporarily store.
         let local0 = module.locals.add(walrus::ValType::I32);
@@ -58,6 +62,13 @@ pub fn transform_wasm_to_track_changes(
         let local1_i128 = module.locals.add(walrus::ValType::V128);
         let local1_f32 = module.locals.add(walrus::ValType::F32);
         let local1_f64 = module.locals.add(walrus::ValType::F64);
+
+        let wg_dirty_flags = module.globals.add_local(
+            walrus::ValType::I32,
+            true,
+            walrus::InitExpr::Value(walrus::ir::Value::I32(0)),
+        );
+        module.exports.add("wg_dirty_flags", wg_dirty_flags);
 
         // Used for 3 arg operations that are part of the bulk-memory extension.
         // let local2 = module.locals.add(walrus::ValType::I32);
@@ -70,11 +81,12 @@ pub fn transform_wasm_to_track_changes(
         let global_set_function = module
             .add_import_func("wasm_guardian", "on_global_set", function_type)
             .0;
+        let memory = module.memories.iter().next().unwrap().id();
 
         let mut new_instructions = Vec::new();
         let mut blocks = Vec::new();
 
-        for (_, function) in module.funcs.iter_local_mut() {
+        for (i, function) in module.funcs.iter_local_mut() {
             blocks.clear();
             blocks.push(function.entry_block());
 
@@ -103,43 +115,29 @@ pub fn transform_wasm_to_track_changes(
                         walrus::ir::Instr::MemoryCopy(_)
                         | walrus::ir::Instr::MemoryInit(_)
                         | walrus::ir::Instr::MemoryFill(_) => {
+                            new_instructions.push(instruction.clone());
+
                             // These operations probably require looping to set the pages that were written to.
-                            todo!()
+                            // todo!("{:?}", instruction.0)
                         }
                         walrus::ir::Instr::Store(s) => {
-                            // 15-19 extra instructions per call to store. Certainly not ideal!
+                            // 9-11 extra instructions per call to store. Certainly not ideal!
 
-                            let (local1, size) = match s.kind {
-                                walrus::ir::StoreKind::I32 { .. } => {
-                                    (local1_i32, std::mem::size_of::<i32>() as _)
-                                }
-                                walrus::ir::StoreKind::I64 { .. } => {
-                                    (local1_i64, std::mem::size_of::<i64>() as _)
-                                }
-                                walrus::ir::StoreKind::F32 => {
-                                    (local1_f32, std::mem::size_of::<f32>() as _)
-                                }
-                                walrus::ir::StoreKind::F64 => {
-                                    (local1_f64, std::mem::size_of::<f64>() as _)
-                                }
-                                walrus::ir::StoreKind::V128 => {
-                                    (local1_i128, std::mem::size_of::<i128>() as _)
-                                }
-                                walrus::ir::StoreKind::I32_8 { .. } => {
-                                    (local1_i32, std::mem::size_of::<i32>() as _)
-                                }
-                                walrus::ir::StoreKind::I32_16 { .. } => {
-                                    (local1_i32, std::mem::size_of::<i32>() as _)
-                                }
-                                walrus::ir::StoreKind::I64_8 { .. } => {
-                                    (local1_i64, std::mem::size_of::<i64>() as _)
-                                }
-                                walrus::ir::StoreKind::I64_16 { .. } => {
-                                    (local1_i64, std::mem::size_of::<i64>() as _)
-                                }
-                                walrus::ir::StoreKind::I64_32 { .. } => {
-                                    (local1_i64, std::mem::size_of::<i64>() as _)
-                                }
+                            // A future optimization that could be made here is to move the code that creates the second store
+                            // arg to after this store tracking code.
+                            // That would save an additional 2 instructions.
+
+                            let local1 = match s.kind {
+                                walrus::ir::StoreKind::I32 { .. } => local1_i32,
+                                walrus::ir::StoreKind::I64 { .. } => local1_i64,
+                                walrus::ir::StoreKind::F32 => local1_f32,
+                                walrus::ir::StoreKind::F64 => local1_f64,
+                                walrus::ir::StoreKind::V128 => local1_i128,
+                                walrus::ir::StoreKind::I32_8 { .. } => local1_i32,
+                                walrus::ir::StoreKind::I32_16 { .. } => local1_i32,
+                                walrus::ir::StoreKind::I64_8 { .. } => local1_i64,
+                                walrus::ir::StoreKind::I64_16 { .. } => local1_i64,
+                                walrus::ir::StoreKind::I64_32 { .. } => local1_i64,
                             };
 
                             // Push both store args to temporary locals.
@@ -193,50 +191,8 @@ pub fn transform_wasm_to_track_changes(
                                     walrus::InstrLocId::default(),
                                 ),
                                 (
-                                    walrus::ir::Instr::RefNull(RefNull {
-                                        ty: walrus::ValType::Funcref,
-                                    }),
-                                    walrus::InstrLocId::default(),
-                                ),
-                                (
-                                    walrus::ir::Instr::TableSet(walrus::ir::TableSet {
-                                        table: dirty_flags_table,
-                                    }),
-                                    walrus::InstrLocId::default(),
-                                ),
-                            ]);
-
-                            // If there is an offset then add it to the address.
-                            if s.arg.offset != 0 {
-                                new_instructions.extend_from_slice(&[
-                                    (
-                                        walrus::ir::Instr::Const(walrus::ir::Const {
-                                            value: walrus::ir::Value::I32(s.arg.offset as _),
-                                        }),
-                                        walrus::InstrLocId::default(),
-                                    ),
-                                    (
-                                        // This is operating on memory addresses, is this the correct type of add?
-                                        walrus::ir::Instr::Binop(walrus::ir::Binop {
-                                            op: walrus::ir::BinaryOp::I32Add,
-                                        }),
-                                        walrus::InstrLocId::default(),
-                                    ),
-                                ]);
-                            }
-
-                            new_instructions.extend_from_slice(&[
-                                // Mark dirty flags for the end of the value being stored.
-                                // It's unfortunate this is needed because it's non-trivial overhead.
-                                (
-                                    walrus::ir::Instr::LocalGet(walrus::ir::LocalGet {
-                                        local: local0,
-                                    }),
-                                    walrus::InstrLocId::default(),
-                                ),
-                                (
-                                    walrus::ir::Instr::Const(walrus::ir::Const {
-                                        value: walrus::ir::Value::I32(size),
+                                    walrus::ir::Instr::GlobalGet(walrus::ir::GlobalGet {
+                                        global: wg_dirty_flags,
                                     }),
                                     walrus::InstrLocId::default(),
                                 ),
@@ -248,16 +204,22 @@ pub fn transform_wasm_to_track_changes(
                                 ),
                                 (
                                     walrus::ir::Instr::Const(walrus::ir::Const {
-                                        value: walrus::ir::Value::I32(PAGE_SIZE_POWER_OF_2 as _),
+                                        value: walrus::ir::Value::I32(1),
                                     }),
                                     walrus::InstrLocId::default(),
                                 ),
                                 (
-                                    walrus::ir::Instr::Binop(walrus::ir::Binop {
-                                        op: walrus::ir::BinaryOp::I32ShrU,
+                                    walrus::ir::Instr::Store(walrus::ir::Store {
+                                        memory,
+                                        kind: StoreKind::I32 { atomic: false },
+                                        arg: MemArg {
+                                            align: 4,
+                                            offset: 0,
+                                        },
                                     }),
                                     walrus::InstrLocId::default(),
                                 ),
+                                /*
                                 (
                                     walrus::ir::Instr::RefNull(RefNull {
                                         ty: walrus::ValType::Funcref,
@@ -270,6 +232,13 @@ pub fn transform_wasm_to_track_changes(
                                     }),
                                     walrus::InstrLocId::default(),
                                 ),
+                                */
+                            ]);
+
+                            // Note: This store could overlap the next page. It's up to the host environment to check
+                            // the start of pages following dirty pages.
+
+                            new_instructions.extend_from_slice(&[
                                 // Restore the locals so the store OP can go ahead.
                                 (
                                     walrus::ir::Instr::LocalGet(walrus::ir::LocalGet {
@@ -310,6 +279,9 @@ pub fn transform_wasm_to_track_changes(
                                 instruction.clone(),
                             ]);
                         }
+                        // Globals can be set frequently but usually there aren't that many of them.
+                        // It's generally quicker to just skim them from the host environment to check for changes.
+                        /*
                         walrus::ir::Instr::GlobalSet(global_set) => {
                             new_instructions.extend_from_slice(&[
                                 (
@@ -328,7 +300,7 @@ pub fn transform_wasm_to_track_changes(
                                 ),
                                 instruction.clone(),
                             ]);
-                        }
+                        }*/
                         _ => {
                             new_instructions.push(instruction.clone());
                         }
@@ -353,13 +325,16 @@ impl<'instr> walrus::ir::Visitor<'instr> for AllBlocks<'instr> {
     fn visit_loop(&mut self, instr: &walrus::ir::Loop) {
         self.blocks.push(instr.seq);
     }
+    fn visit_if_else(&mut self, instr: &walrus::ir::IfElse) {
+        self.blocks.push(instr.consequent);
+        self.blocks.push(instr.alternative);
+    }
 }
 
-/*
 #[test]
 fn test() {
-    let bytes = std::fs::read("wasm_snippets/example_script_bulk_memory.wasm").unwrap();
-    let output = transform_wasm_to_track_changes(&bytes);
+    let bytes =
+        std::fs::read("/Users/ian/Workspace/tangle/examples/ball_pit/dist/my_wasm.wasm").unwrap();
+    let output = transform_wasm_to_track_changes(&bytes, true, true);
     std::fs::write("output.wasm", &output).unwrap();
 }
-*/

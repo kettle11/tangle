@@ -592,11 +592,16 @@ var TimeMachine = class {
         return 14;
       });
     }
+    imports.wasm_guardian = {};
+    imports.wasm_guardian.on_grow = (amount) => {
+    };
+    imports.wasm_guardian.on_global_set = () => {
+    };
     let external_log = () => {
       console.log("Not implemented");
     };
     (_c = imports.env).external_log ?? (_c.external_log = (a, b) => external_log(a, b));
-    wasm_binary = rust_utilities.process_binary(wasm_binary, true, false);
+    wasm_binary = rust_utilities.process_binary(wasm_binary, true, true);
     const wasm_instance = await WebAssembly.instantiate(wasm_binary, imports);
     const time_machine = new TimeMachine(wasm_instance, rust_utilities);
     console.log("[tangle] Heap size: ", wasm_instance.instance.exports.memory.buffer.byteLength);
@@ -631,6 +636,12 @@ var TimeMachine = class {
       time_machine._fixed_update_interval = void 0;
     }
     time_machine._snapshots = [time_machine._get_wasm_snapshot()];
+    if (time_machine._wasm_instance.instance.exports.allocate_dirty_flags_array) {
+      const dirty_flags_size = 20;
+      const dirty_flags_array_pointer = time_machine._wasm_instance.instance.exports.allocate_dirty_flags_array(dirty_flags_size);
+      time_machine._wasm_instance.instance.exports.wg_dirty_flags.value = dirty_flags_array_pointer;
+      time_machine.dirty_flags_array = new Uint8Array(time_machine._wasm_instance.instance.exports.memory.buffer, dirty_flags_array_pointer, dirty_flags_size);
+    }
     console.log("\u{1F680}\u23F3 Time Machine Activated \u23F3\u{1F680}");
     return time_machine;
   }
@@ -762,7 +773,11 @@ var TimeMachine = class {
     const function_call = this._events[i];
     if (function_call !== void 0 && function_call.time_stamp.time <= this._target_time) {
       const f = this._exports[function_call.function_export_index];
+      const now = performance.now();
       f(...function_call.args);
+      if (this.get_function_name(function_call.function_export_index) == "fixed_update") {
+        console.log("TIME: ", performance.now() - now);
+      }
       if (debug_mode) {
         function_call.hash = this.hash_wasm_state();
       }
