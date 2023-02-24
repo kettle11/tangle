@@ -961,6 +961,7 @@ var Tangle = class {
     this._outgoing_message_buffer = new Uint8Array(500);
     this._message_time_offset = 0;
     this._last_sent_message = 0;
+    this._in_call_that_will_be_reverted = false;
     this._time_machine = time_machine;
     this._rust_utilities = time_machine.rust_utilities;
   }
@@ -976,6 +977,9 @@ var Tangle = class {
           if (typeof importValue === "function") {
             moduleImports[importName] = function(...args) {
               const r = importValue(...args);
+              if (this._in_call_that_will_be_reverted) {
+                return r;
+              }
               if (r !== void 0) {
                 console.log("[tangle warning] Tangle prevents WebAssembly imports from returning values because those values are unique per-peer and would cause a desync.");
               }
@@ -1161,7 +1165,9 @@ var Tangle = class {
           this.call(key, ...args);
         };
         wrapped_function.callAndRevert = (...args) => {
+          this._in_call_that_will_be_reverted = true;
           this.call_and_revert(key, ...args);
+          this._in_call_that_will_be_reverted = false;
         };
         export_object[key] = wrapped_function;
       }

@@ -71,6 +71,7 @@ export class Tangle {
     private _message_time_offset = 0;
 
     private _last_sent_message = 0;
+    private _in_call_that_will_be_reverted = false;
 
     // private _debug_enabled = true;
 
@@ -90,6 +91,10 @@ export class Tangle {
                     if (typeof importValue === 'function') {
                         moduleImports[importName] = function (...args: any) {
                             const r = importValue(...args);
+                            // This call will be reverted so it's OK if it causes a temporary desync.
+                            if (this._in_call_that_will_be_reverted) {
+                                return r;
+                            }
                             if (r !== undefined) {
                                 console.log("[tangle warning] Tangle prevents WebAssembly imports from returning values because those values are unique per-peer and would cause a desync.")
                             }
@@ -321,7 +326,9 @@ export class Tangle {
                     this.call(key, ...args);
                 };
                 wrapped_function.callAndRevert = (...args: any) => {
+                    this._in_call_that_will_be_reverted = true;
                     this.call_and_revert(key, ...args);
+                    this._in_call_that_will_be_reverted = false;
                 };
                 export_object[key] = wrapped_function;
             }
