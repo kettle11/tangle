@@ -37,7 +37,8 @@ type TangleConfiguration = {
     room_name?: string,
     ice_servers?: RTCIceServer[],
     room_server?: string,
-    on_state_change_callback?: (state: TangleState, tangle: Tangle) => void
+    on_state_change_callback?: (state: TangleState, tangle: Tangle) => void,
+    on_rollback_occurred_callback?: (time: number) => void;
 }
 
 type InstantiatedTangle = {
@@ -71,7 +72,6 @@ export class Tangle {
     private _message_time_offset = 0;
 
     private _last_sent_message = 0;
-    private _in_call_that_will_be_reverted = false;
 
     // private _debug_enabled = true;
 
@@ -83,28 +83,7 @@ export class Tangle {
 
         importObject ??= {};
 
-        // Wrap all imports so that they can't return a value, which would cause desyncs.
-        // This may need more thought in the future because it's a big limitation.
-        if (importObject) {
-            Object.values(importObject).forEach((moduleImports) => {
-                Object.entries(moduleImports).forEach(([importName, importValue]) => {
-                    if (typeof importValue === 'function') {
-                        moduleImports[importName] = function (...args: any) {
-                            const r = importValue(...args);
-                            // This call will be reverted so it's OK if it causes a temporary desync.
-                            if (this._in_call_that_will_be_reverted) {
-                                return r;
-                            }
-                            if (r !== undefined) {
-                                console.log("[tangle warning] Tangle prevents WebAssembly imports from returning values because those values are unique per-peer and would cause a desync.")
-                            }
-                        };
-                    }
-                });
-            });
-        }
-
-        const time_machine = await TimeMachine.setup(wasm_binary, importObject, tangle_configuration.fixed_update_interval);
+        const time_machine = await TimeMachine.setup(wasm_binary, importObject, tangle_configuration.fixed_update_interval, tangle_configuration.on_rollback_occurred_callback);
 
         const tangle = new Tangle(time_machine);
         tangle._configuration = tangle_configuration;
@@ -326,9 +305,7 @@ export class Tangle {
                     this.call(key, ...args);
                 };
                 wrapped_function.callAndRevert = (...args: any) => {
-                    this._in_call_that_will_be_reverted = true;
                     this.call_and_revert(key, ...args);
-                    this._in_call_that_will_be_reverted = false;
                 };
                 export_object[key] = wrapped_function;
             }

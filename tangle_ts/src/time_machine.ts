@@ -68,6 +68,8 @@ export class TimeMachine {
     private _function_name_to_index: Map<string, number> = new Map();
     private _fixed_update_index: number | undefined;
 
+    private _on_rollback_occurred_callback?: (time: number) => void;
+
     rust_utilities: RustUtilities
 
     private constructor(wasm_instance: WebAssembly.WebAssemblyInstantiatedSource, rust_utilities: RustUtilities) {
@@ -77,7 +79,7 @@ export class TimeMachine {
         this.rust_utilities = rust_utilities;
     }
 
-    static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports, fixed_update_interval?: number): Promise<TimeMachine> {
+    static async setup(wasm_binary: Uint8Array, imports: WebAssembly.Imports, fixed_update_interval?: number, on_rollback_occurred_callback?: (time: number) => void): Promise<TimeMachine> {
         const rust_utilities = await RustUtilities.setup();
 
         // TODO: These imports are for AssemblyScript, but they should be optional
@@ -102,6 +104,7 @@ export class TimeMachine {
 
         const time_machine = new TimeMachine(wasm_instance, rust_utilities);
 
+        time_machine._on_rollback_occurred_callback = on_rollback_occurred_callback;
         console.log("[tangle] Heap size: ", (wasm_instance.instance.exports.memory as WebAssembly.Memory).buffer.byteLength);
 
         // TODO: Think more about what 'standard library' Wasm should be provided.
@@ -300,6 +303,8 @@ export class TimeMachine {
             if (debug_mode) {
                 action_log += `Rolling back to: ${snap_shot.time_stamp.time} ${snap_shot.time_stamp.player_id}\n`;
             }
+
+            this._on_rollback_occurred_callback?.(this._need_to_rollback_to_time.time);
 
             // Begin simulation from the event that occurred after the snapshot rolled back to.
             this._current_simulation_time = snap_shot.time_stamp;
