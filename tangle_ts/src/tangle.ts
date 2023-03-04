@@ -72,6 +72,7 @@ export class Tangle {
     private _message_time_offset = 0;
 
     private _last_sent_message = 0;
+    private _within_wasm_call = false;
 
     // private _debug_enabled = true;
 
@@ -113,6 +114,7 @@ export class Tangle {
                 console.log("🌱 Tangle State: ", TangleState[state]);
                 console.log("Learn more about Tangle at https://tanglesync.com");
                 this._last_performance_now = performance.now();
+                this.progress_time();
             }
             this._tangle_state = state;
             this._configuration.on_state_change_callback?.(state, this);
@@ -229,7 +231,7 @@ export class Tangle {
                                 });
                             } else {
                                 console.log("[tangle] Remote Wasm call: ", this._time_machine.get_function_name(m.function_index));
-                                await this._time_machine.call_with_time_stamp(m.function_index, m.args, time_stamp);
+                                this._time_machine.call_with_time_stamp(m.function_index, m.args, time_stamp);
                                 if (!(this._time_machine._fixed_update_interval)) {
                                     this.progress_time();
                                 }
@@ -253,7 +255,7 @@ export class Tangle {
 
                                 // Apply any messages that were received as we were waiting for this to load.
                                 for (const m of this._buffered_messages) {
-                                    await this._time_machine.call_with_time_stamp(m.function_export_index, m.args, m.time_stamp);
+                                    this._time_machine.call_with_time_stamp(m.function_export_index, m.args, m.time_stamp);
                                 }
                                 this._buffered_messages = [];
 
@@ -302,7 +304,13 @@ export class Tangle {
             const e = this._time_machine._wasm_instance.instance.exports[key];
             if (typeof e === 'function') {
                 const wrapped_function = (...args: any) => {
-                    this.call(key, ...args);
+                    if (this._within_wasm_call) {
+                        // TODO: Record this call somehow to ensure it's exactly occurring exactly
+                        // the same across all peers.
+                        (this._time_machine._wasm_instance.instance.exports[key] as CallableFunction)(...args);
+                    } else {
+                        this.call(key, ...args);
+                    }
                 };
                 wrapped_function.callAndRevert = (...args: any) => {
                     this.call_and_revert(key, ...args);
@@ -468,7 +476,7 @@ export class Tangle {
 
             const function_index = this._time_machine.get_function_export_index(function_name);
             if (function_index !== undefined) {
-                await this._time_machine.call_with_time_stamp(function_index, args_processed, time_stamp);
+                this._time_machine.call_with_time_stamp(function_index, args_processed, time_stamp);
 
                 // Do not send events to the room if we're not yet fully connected.
                 if (this._tangle_state == TangleState.Connected) {
@@ -550,6 +558,7 @@ export class Tangle {
             const time_budget = time_progressed * 0.7;
             const time_here = performance.now();
 
+            this._within_wasm_call = true;
             while (this._time_machine.step()) {
                 // TODO: A better heuristic for when snapshots should be taken.
                 // They could be taken after a set amount of computational overhead.
@@ -559,6 +568,7 @@ export class Tangle {
                     break;
                 }
             }
+            this._within_wasm_call = false;
 
             // Remove history that's safe to remove.
 

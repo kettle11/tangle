@@ -175,7 +175,7 @@ export class TimeMachine {
     }
 
     /// Returns the function call of this instance.
-    async call_with_time_stamp(function_export_index: number, args: Array<number>, time_stamp: TimeStamp) {
+    call_with_time_stamp(function_export_index: number, args: Array<number>, time_stamp: TimeStamp) {
         if (time_stamp_compare(time_stamp, this._snapshots[0].time_stamp) == -1) {
             // TODO: This is an error. It's no longer possible to add events in the past.
             // Report a desync here.
